@@ -26,24 +26,62 @@ USER_AGENTS = [
 ]
 
 
+import shutil
+
 def find_chromedriver_path() -> str:
-    """Tìm đường dẫn local ChromeDriver đã có sẵn trên máy"""
-    candidates = [
+    """Tìm đường dẫn ChromeDriver tương thích cả Windows và Linux/Termux/PRoot"""
+    # 1. Kiểm tra PATH hệ thống trước (chuẩn nhất cho Linux/Termux: /usr/bin/chromedriver)
+    which_path = shutil.which("chromedriver")
+    if which_path:
+        return which_path
+
+    # 2. Các đường dẫn phổ biến trên Windows
+    win_candidates = [
         r"C:\Users\thinh\.wdm\drivers\chromedriver\win64\155.0.8059.84\chromedriver-win64\chromedriver.exe",
         r"C:\Program Files\Google\Chrome\Application\chromedriver.exe"
     ]
-    for c in candidates:
+    for c in win_candidates:
         if os.path.exists(c):
             return c
 
-    # Tìm đệ quy trong thư mục .wdm
-    wdm_root = os.path.expanduser(r"~/.wdm/drivers/chromedriver")
+    # 3. Các đường dẫn phổ biến trên Linux / Ubuntu PRoot / Termux
+    linux_candidates = [
+        "/usr/bin/chromedriver",
+        "/usr/lib/chromium-browser/chromedriver",
+        "/data/data/com.termux/files/usr/bin/chromedriver"
+    ]
+    for c in linux_candidates:
+        if os.path.exists(c):
+            return c
+
+    # 4. Tìm đệ quy trong thư mục .wdm nếu có
+    wdm_root = os.path.expanduser("~/.wdm/drivers/chromedriver")
     if os.path.exists(wdm_root):
         for root, dirs, files in os.walk(wdm_root):
-            if "chromedriver.exe" in files:
-                return os.path.join(root, "chromedriver.exe")
+            for file in ["chromedriver.exe", "chromedriver"]:
+                if file in files:
+                    return os.path.join(root, file)
 
     return "chromedriver"
+
+
+def find_chrome_binary() -> str:
+    """Tìm binary trình duyệt Chrome / Chromium (đặc biệt quan trọng trên Linux / Termux)"""
+    bin_names = ["chromium-browser", "chromium", "google-chrome", "google-chrome-stable"]
+    for b in bin_names:
+        found = shutil.which(b)
+        if found:
+            return found
+            
+    linux_bins = [
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+        "/data/data/com.termux/files/usr/bin/chromium"
+    ]
+    for b in linux_bins:
+        if os.path.exists(b):
+            return b
+    return ""
 
 
 def random_delay(min_sec: float = 1.0, max_sec: float = 2.5) -> None:
@@ -80,6 +118,11 @@ def create_stealth_driver(headless: bool = True) -> webdriver.Chrome:
 
     ua = random.choice(USER_AGENTS)
     options.add_argument(f"user-agent={ua}")
+
+    # Chỉ định đường dẫn binary Chromium nếu có (cần thiết trên Termux/Linux)
+    chrome_bin = find_chrome_binary()
+    if chrome_bin:
+        options.binary_location = chrome_bin
 
     driver_path = find_chromedriver_path()
     service = Service(driver_path)
