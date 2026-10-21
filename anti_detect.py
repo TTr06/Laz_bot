@@ -119,14 +119,34 @@ def create_stealth_driver(headless: bool = True) -> webdriver.Chrome:
     ua = random.choice(USER_AGENTS)
     options.add_argument(f"user-agent={ua}")
 
+    # Các cờ bổ trợ đặc biệt cho Linux / Termux / PRoot
+    options.add_argument("--disable-software-rasterizer")
+    if sys.platform.startswith("linux"):
+        options.add_argument("--no-zygote")
+
     # Chỉ định đường dẫn binary Chromium nếu có (cần thiết trên Termux/Linux)
     chrome_bin = find_chrome_binary()
     if chrome_bin:
         options.binary_location = chrome_bin
 
     driver_path = find_chromedriver_path()
-    service = Service(driver_path)
-    driver = webdriver.Chrome(service=service, options=options)
+    try:
+        service = Service(driver_path) if driver_path and os.path.exists(driver_path) else Service()
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        # Fallback nếu --headless=new hoặc đường dẫn driver trên Termux cần cờ headless chuẩn
+        try:
+            alt_options = Options()
+            for arg in options.arguments:
+                if arg == "--headless=new":
+                    alt_options.add_argument("--headless")
+                else:
+                    alt_options.add_argument(arg)
+            if chrome_bin:
+                alt_options.binary_location = chrome_bin
+            driver = webdriver.Chrome(options=alt_options)
+        except Exception:
+            raise e
     driver.set_page_load_timeout(20)
 
     # CDP evasions

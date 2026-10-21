@@ -28,12 +28,18 @@ from telegram.ext import (
     filters,
 )
 
-from cookie_manager import parse_cookie_input, save_cookies_list, load_saved_cookies
+from cookie_manager import (
+    parse_cookie_input,
+    save_cookies_list,
+    load_saved_cookies,
+    prompt_interactive_cookie,
+)
 from price_tracker import (
     scrape_cart,
     track_prices,
     get_price_summary,
     format_cart_message,
+    format_cart_messages,
     format_changes_alert,
 )
 from subscriber_manager import (
@@ -70,9 +76,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"• Đăng nhập bằng Cookie (Không mở trình duyệt)\n"
         f"• Tự động tick <b>Chọn tất cả</b> để đọc giá sau Voucher & Khuyến mãi\n"
         f"• Theo dõi độc lập <b>tất cả phân loại (SKU)</b> của từng sản phẩm\n"
-        f"• Lịch quét thông minh: <b>15 phút/lần</b> (Khung 0h, 9h, 12h, 15h, 18h, 21h: <b>2 phút/lần</b>)\n"
+        f"• Lịch quét thông minh: <b>5 phút/lần</b> (Khung 0h, 9h, 12h, 15h, 18h, 21h: <b>2 phút/lần</b>)\n"
         f"• Tự động gửi thông báo khi <b>Biến động giá</b> hoặc <b>Cookie hết hạn</b>\n"
         f"• An toàn tuyệt đối: Không bao giờ bấm vào trang thanh toán\n\n"
+        f"🔑 <b>Cách nạp Cookie Lazada:</b>\n"
+        f"1. <b>Dán trực tiếp:</b> Copy JSON từ Cookie-Editor rồi dán thẳng vào tin nhắn này.\n"
+        f"2. <b>Gửi file:</b> Kéo thả hoặc gửi file <code>cookie.json</code>.\n"
+        f"3. <b>Dùng lệnh:</b> <code>/cookie &lt;dán JSON vào đây&gt;</code>\n\n"
         f"👉 Gõ /help để xem toàn bộ danh sách lệnh."
     )
     if update.effective_message:
@@ -109,19 +119,24 @@ async def cookie_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not msg:
         return
 
-    if not context.args:
+    full_text = msg.text or ""
+    # Cắt bỏ /cookie hoặc /cookie@botname
+    raw_input = re.sub(r'^/cookie(@\w+)?\s*', '', full_text, flags=re.IGNORECASE).strip()
+    if not raw_input and context.args:
+        raw_input = " ".join(context.args).strip()
+
+    if not raw_input:
         help_guide = (
-            "📌 <b>Cách nạp cookie Lazada:</b>\n"
-            "Bạn có thể dán toàn bộ mảng JSON từ extension Cookie-Editor hoặc chuỗi Cookie Header vào lệnh:\n"
-            "<code>/cookie &lt;dán cookie vào đây&gt;</code>\n\n"
-            "<i>(Hoặc dán vào file <code>cookie.json</code> trong thư mục bot)</i>"
+            "📌 <b>Cách nạp cookie Lazada:</b>\n\n"
+            "1. <b>Dán trực tiếp</b>: Bạn chỉ cần copy mảng JSON từ Cookie-Editor rồi <b>dán thẳng vào chat</b> bot sẽ tự nhận diện!\n"
+            "2. <b>Dùng lệnh /cookie</b>: <code>/cookie &lt;dán JSON vào đây&gt;</code>\n"
+            "3. <b>Gửi file</b>: Kéo thả file <code>cookie.json</code> vào chat.\n\n"
+            "<i>(Nếu chạy trên Termux, bạn cũng có thể dán trực tiếp trong terminal mỗi khi khởi động bot)</i>"
         )
         await msg.reply_html(help_guide)
         return
 
-    raw_input = " ".join(context.args)
     cookies = parse_cookie_input(raw_input)
-
     if not cookies:
         await msg.reply_text("❌ Không thể nhận diện định dạng cookie. Vui lòng kiểm tra lại chuỗi copy.")
         return
@@ -134,16 +149,14 @@ async def cookie_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Xử lý khi người dùng gửi file cookie.json hoặc cookie.txt đính kèm qua Telegram"""
+    """Xử lý khi người dùng gửi file cookie (.json / .txt / document bất kỳ) đính kèm qua Telegram"""
     auto_register_user(update)
     msg = update.effective_message
     if not msg or not msg.document:
         return
 
     doc = msg.document
-    file_name = doc.file_name or ""
-    if not (file_name.endswith(".json") or file_name.endswith(".txt")):
-        return
+    file_name = doc.file_name or "cookie_file"
 
     status_msg = await msg.reply_text("📥 Đang nhận và giải mã file cookie...")
     try:
@@ -153,7 +166,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         cookies = parse_cookie_input(content)
         if not cookies:
-            await status_msg.edit_text("❌ Không thể đọc cookie từ file. Vui lòng kiểm tra định dạng file JSON.")
+            await status_msg.edit_text("❌ Không tìm thấy cookie Lazada hợp lệ trong file. Vui lòng kiểm tra định dạng.")
             return
 
         count = save_cookies_list(cookies)
@@ -174,8 +187,16 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     text = msg.text.strip()
-    # Nhận diện nếu tin nhắn là JSON mảng cookie hoặc chuỗi cookie
-    if (text.startswith("[") and text.endswith("]")) or (text.startswith("{") and text.endswith("}")) or "lzd_sid=" in text or "t_sid=" in text:
+    # Nhận diện nếu tin nhắn chứa JSON cookie hoặc chuỗi cookie Lazada
+    has_cookie_markers = (
+        ("[" in text and "]" in text) or
+        ("{" in text and "}" in text) or
+        "lzd_sid" in text or
+        "t_uid" in text or
+        "sgcookie" in text or
+        "t_sid=" in text
+    )
+    if has_cookie_markers:
         cookies = parse_cookie_input(text)
         if cookies and len(cookies) > 0:
             count = save_cookies_list(cookies)
@@ -239,12 +260,12 @@ async def cart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     products = result["products"]
     summary = result.get("summary", {})
-    text = format_cart_message(products, summary)
+    messages = format_cart_messages(products, summary)
 
-    if len(text) > 4000:
-        text = text[:4000] + "\n\n<i>... và còn các sản phẩm khác.</i>"
-
-    await status_msg.edit_text(text, parse_mode="HTML")
+    if messages:
+        await status_msg.edit_text(messages[0], parse_mode="HTML")
+        for extra in messages[1:]:
+            await msg.reply_html(extra)
 
 
 async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -357,6 +378,9 @@ async def post_init(application: Application) -> None:
 
 
 def main() -> None:
+    # 1. Tùy chọn nạp JSON Cookie khi khởi động (Hữu ích khi chạy trên Termux / Console)
+    prompt_interactive_cookie()
+
     # Khởi tạo event loop cho MainThread (sửa lỗi RuntimeError trên Python 3.12, 3.13 và 3.14)
     try:
         loop = asyncio.get_event_loop()

@@ -123,7 +123,21 @@ def scrape_cart(headless: bool = True) -> Dict[str, Any]:
                 "summary": {}
             }
 
-        # 2. CHỈ CLICK NÚT 'CHỌN TẤT CẢ' TRÊN GIAO DIỆN GIỎ HÀNG
+        # 2. Cuộn trang để kích hoạt Lazy-load nạp 100% tất cả sản phẩm & phân loại trong giỏ hàng
+        try:
+            scroll_h = driver.execute_script("return document.body.scrollHeight || 3000;")
+            driver.execute_script(f"window.scrollTo(0, {scroll_h * 0.4});")
+            time.sleep(0.8)
+            driver.execute_script(f"window.scrollTo(0, {scroll_h * 0.8});")
+            time.sleep(0.8)
+            driver.execute_script(f"window.scrollTo(0, {scroll_h});")
+            time.sleep(1.0)
+            driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(0.8)
+        except Exception:
+            pass
+
+        # 3. CHỈ CLICK NÚT 'CHỌN TẤT CẢ' TRÊN GIAO DIỆN GIỎ HÀNG
         # TUYỆT ĐỐI KHÔNG CLICK VÀO NÚT THANH TOÁN (CHECKOUT)!
         driver.execute_script("""
             var selectAllCheckbox = document.querySelector('.list-header-checkbox input, .checkbox-wrap label, .list-header-checkbox, .checkbox-wrap input');
@@ -132,7 +146,7 @@ def scrape_cart(headless: bool = True) -> Dict[str, Any]:
             }
         """)
 
-        # 3. Đợi vài giây để giỏ hàng tự cập nhật số tiền hiển thị
+        # 4. Đợi vài giây để giỏ hàng tự cập nhật số tiền hiển thị
         for _ in range(5):
             time.sleep(1)
             summary_txt = driver.execute_script("""
@@ -142,7 +156,7 @@ def scrape_cart(headless: bool = True) -> Dict[str, Any]:
             if summary_txt and "0 items" not in summary_txt:
                 break
 
-        # 4. Đọc dữ liệu từng sản phẩm & từng phân loại và Giá Cuối Cùng ngay tại giỏ
+        # 5. Đọc dữ liệu từng sản phẩm & từng phân loại và Giá Cuối Cùng ngay tại giỏ
         products, summary_data = _extract_cart_and_summary(driver)
 
         if not products:
@@ -361,13 +375,23 @@ def track_prices(headless: bool = True) -> dict:
     }
 
 
-def format_cart_message(products: List[dict], summary: dict) -> str:
-    """Format tin nhắn hiển thị danh sách sản phẩm và tổng tiền đơn hàng sau khi chọn tất cả"""
-    lines = ["🛒 <b>GIỎ HÀNG LAZADA (ĐÃ CHỌN TẤT CẢ TẠI GIỎ):</b>\n"]
+def format_cart_messages(products: List[dict], summary: dict) -> List[str]:
+    """
+    Format danh sách sản phẩm và tổng tiền, tự động chia thành nhiều tin nhắn nếu vượt giới hạn ký tự Telegram.
+    ĐẢM BẢO HIỂN THỊ ĐẦY ĐỦ 100% TẤT CẢ SẢN PHẨM VÀ TẤT CẢ PHÂN LOẠI (SKU).
+    """
+    messages = []
+    current_lines = []
 
-    # Đặt GIÁ CUỐI CÙNG lên đầu thật nổi bật
+    valid_items = [p for p in products if p.get("valid", True)]
+    invalid_items = [p for p in products if not p.get("valid", True)]
+    total_count = len(products)
+
+    # 1. Header & Order Summary (Chỉ hiển thị ở đầu tin nhắn đầu tiên)
+    current_lines.append(f"🛒 <b>GIỎ HÀNG LAZADA ({total_count} SẢN PHẨM & PHÂN LOẠI):</b>\n")
+
     if summary and "Total" in summary:
-        lines.append(f"🔥 <b>GIÁ CUỐI CÙNG TOÀN GIỎ:</b> <code>{summary['Total']}</code>")
+        current_lines.append(f"🔥 <b>GIÁ CUỐI CÙNG TOÀN GIỎ:</b> <code>{summary['Total']}</code>")
         sub = summary.get("Subtotal")
         promo = summary.get("Promotion")
         ship = summary.get("Shipping Fee")
@@ -376,40 +400,84 @@ def format_cart_message(products: List[dict], summary: dict) -> str:
         if promo: details.append(f"Voucher giảm: {promo}")
         if ship: details.append(f"Ship: {ship}")
         if details:
-            lines.append(f"ℹ️ <i>({', '.join(details)})</i>")
-        lines.append("━━━━━━━━━━━━━━━━━━━━\n")
+            current_lines.append(f"ℹ️ <i>({', '.join(details)})</i>")
+        current_lines.append("━━━━━━━━━━━━━━━━━━━━\n")
 
-    valid_items = [p for p in products if p.get("valid", True)]
-    invalid_items = [p for p in products if not p.get("valid", True)]
+    current_lines.append("📦 <b>Chi tiết tất cả mặt hàng & phân loại:</b>")
 
-    # Danh sách các mặt hàng đã chọn
-    lines.append("📦 <b>Chi tiết từng mặt hàng & phân loại:</b>")
+    # Ước lượng độ dài ký tự
+    current_char_count = sum(len(line) + 2 for line in current_lines)
+
     for i, p in enumerate(valid_items, 1):
-        name = p["name"][:55]
-        sku = f" <i>[{p['sku']}]</i>" if p.get("sku") else ""
-        price = p["price"]
+        name = p.get("name", "").strip()
+        # Hiển thị tên rõ ràng (tối đa 75 ký tự)
+        name_display = name[:75] + ("..." if len(name) > 75 else "")
+        sku_val = p.get("sku", "").strip()
+        sku = f"\n   🏷️ <i>Phân loại: {sku_val}</i>" if sku_val else ""
+        price = p.get("price")
 
         if p.get("has_discount") and p.get("base_price"):
             base_p = p["base_price"]
-            diff = p["discount_amount"]
-            lines.append(
-                f"<b>{i}. {name}</b>{sku}\n"
-                f"   💰 Giá cuối món này: <b>{price:,.0f}₫</b> <s>{base_p:,.0f}₫</s> <i>(-{diff:,.0f}₫)</i>"
+            diff = p.get("discount_amount", 0)
+            item_block = (
+                f"<b>{i}. {name_display}</b>{sku}\n"
+                f"   💰 Giá cuối: <b>{price:,.0f}₫</b> <s>{base_p:,.0f}₫</s> <i>(-{diff:,.0f}₫)</i>"
             )
         else:
             price_str = f"{price:,.0f}₫" if price else "N/A"
-            lines.append(f"<b>{i}. {name}</b>{sku}\n   💰 Giá cuối món này: <b>{price_str}</b>")
+            item_block = (
+                f"<b>{i}. {name_display}</b>{sku}\n"
+                f"   💰 Giá cuối: <b>{price_str}</b>"
+            )
+
+        block_len = len(item_block) + 2
+        # Nếu cộng thêm mặt hàng này vượt quá 3500 ký tự thì ngắt sang tin nhắn mới
+        if current_char_count + block_len > 3500 and current_lines:
+            messages.append("\n\n".join(current_lines))
+            current_lines = [f"📦 <b>Chi tiết sản phẩm giỏ hàng (tiếp theo):</b>"]
+            current_char_count = len(current_lines[0])
+
+        current_lines.append(item_block)
+        current_char_count += block_len
 
     # Mặt hàng hết hàng / không khả dụng
     if invalid_items:
-        lines.append("\n⚠️ <b>Mặt hàng hết hàng (không thể chọn):</b>")
-        for p in invalid_items:
-            name = p["name"][:55]
-            sku = f" <i>[{p['sku']}]</i>" if p.get("sku") else ""
-            lines.append(f"• <s>{name}</s>{sku}")
+        inv_header = "\n⚠️ <b>Mặt hàng hết hàng (không thể chọn):</b>"
+        if current_char_count + len(inv_header) > 3500:
+            messages.append("\n\n".join(current_lines))
+            current_lines = []
+            current_char_count = 0
 
-    lines.append("\n🛡️ <i>Chỉ kiểm tra và tính giá tại giỏ hàng, hoàn toàn không chuyển sang trang thanh toán.</i>")
-    return "\n\n".join(lines)
+        current_lines.append(inv_header)
+        for p in invalid_items:
+            name = p.get("name", "")[:60]
+            sku_val = p.get("sku", "").strip()
+            sku = f" <i>[{sku_val}]</i>" if sku_val else ""
+            inv_block = f"• <s>{name}</s>{sku}"
+            if current_char_count + len(inv_block) > 3500:
+                messages.append("\n\n".join(current_lines))
+                current_lines = []
+                current_char_count = 0
+            current_lines.append(inv_block)
+            current_char_count += len(inv_block) + 2
+
+    footer = "🛡️ <i>Chỉ kiểm tra và tính giá tại giỏ hàng, hoàn toàn không chuyển sang trang thanh toán.</i>"
+    if current_char_count + len(footer) > 3700:
+        messages.append("\n\n".join(current_lines))
+        current_lines = [footer]
+    else:
+        current_lines.append(f"\n{footer}")
+
+    if current_lines:
+        messages.append("\n\n".join(current_lines))
+
+    return messages
+
+
+def format_cart_message(products: List[dict], summary: dict) -> str:
+    """Format tin nhắn hiển thị danh sách sản phẩm (tương thích ngược)"""
+    msgs = format_cart_messages(products, summary)
+    return "\n\n".join(msgs)
 
 
 def format_changes_alert(changes: list, total_change: Optional[dict] = None) -> str:

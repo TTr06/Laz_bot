@@ -12,7 +12,7 @@ Bot Telegram theo dõi biến động giá tự động cho toàn bộ sản ph�
 - 🔍 **Theo Dõi Độc Lập Từng Phân Loại (SKU)**: Theo dõi riêng từng màu sắc, kích thước, cấu hình của mỗi mặt hàng trong giỏ.
 - ⏰ **Lịch Trình Quét Thông Minh**:
   - **Khung giờ cao điểm săn sale** (`0h, 9h, 12h, 15h, 18h, 21h`): Quét **2 phút / lần** tính từ đầu giờ (`:00, :02, :04,...`).
-  - **Khung giờ thông thường**: Quét **15 phút / lần** (`:00, :15, :30, :45`).
+  - **Khung giờ thông thường**: Quét **5 phút / lần** (`:00, :05, :10, :15, :20, :25, :30, :35, :40, :45, :50, :55`).
 - 📢 **Cảnh Báo Telegram Realtime**: 
   - Tự động thông báo ngay khi có sản phẩm tăng/giảm giá hoặc thay đổi trạng thái tồn kho.
   - Tự động thông báo khi Cookie hết hạn phiên đăng nhập để người dùng kịp thời cập nhật.

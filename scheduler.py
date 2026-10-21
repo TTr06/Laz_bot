@@ -1,7 +1,7 @@
 """
 Background Scheduler for Lazada Price Tracker
 Lịch trình tự động kiểm tra giỏ hàng:
-- Khung giờ thường: 15 phút / lần (tính chẵn từ đầu giờ: :00, :15, :30, :45)
+- Khung giờ thường: 5 phút / lần (tính chẵn từ đầu giờ: :00, :05, :10, :15, :20, :25, :30, :35, :40, :45, :50, :55)
 - Khung giờ cao điểm (0h, 9h, 12h, 15h, 18h, 21h): 2 phút / lần liên tục
 - Tự động phát hiện biến động giá của tất cả sản phẩm & phân loại và gửi tin nhắn Telegram
 - Tự động phát hiện và gửi cảnh báo Cookie hết hạn
@@ -35,10 +35,10 @@ def calculate_next_run(now: datetime) -> Tuple[datetime, float, bool, int]:
     """
     Tính thời điểm chạy tiếp theo:
     - Nếu trong khung giờ cao điểm (0, 9, 12, 15, 18, 21): 2 phút/lần
-    - Nếu trong khung giờ thường: 15 phút/lần (chẵn phút: :00, :15, :30, :45)
+    - Nếu trong khung giờ thường: 5 phút/lần (chẵn phút: :00, :05, :10, :15, :20, :25, :30, :35, :40, :45, :50, :55)
     """
     is_peak = now.hour in PEAK_HOURS
-    interval_minutes = 2 if is_peak else 15
+    interval_minutes = 2 if is_peak else 5
 
     next_minute = (now.minute // interval_minutes + 1) * interval_minutes
     if next_minute >= 60:
@@ -156,7 +156,7 @@ def get_status_info() -> str:
     """Tạo báo cáo tình trạng hoạt động của scheduler"""
     now = datetime.now()
     is_peak = now.hour in PEAK_HOURS
-    mode = "🔥 Cao điểm (2 phút/lần)" if is_peak else "⏰ Bình thường (15 phút/lần)"
+    mode = "🔥 Cao điểm (2 phút/lần)" if is_peak else "⏰ Bình thường (5 phút/lần)"
     subs = get_subscribers()
     auto_status = "🟢 Đang bật" if is_auto_track_enabled() else "🔴 Đang tắt"
 
@@ -169,6 +169,6 @@ def get_status_info() -> str:
         f"• Số người nhận thông báo: <b>{len(subs)}</b>\n",
         "📌 <b>Quy định khung giờ:</b>",
         "• <b>Khung giờ cao điểm</b> (<code>0h, 9h, 12h, 15h, 18h, 21h</code>): Quét liên tục <b>2 phút/lần</b>.",
-        "• <b>Các khung giờ còn lại</b>: Quét <b>15 phút/lần</b> (chẵn theo đầu giờ: :00, :15, :30, :45)."
+        "• <b>Các khung giờ còn lại</b>: Quét <b>5 phút/lần</b> (chẵn theo đầu giờ: :00, :05, :10, :15,...)."
     ]
     return "\n".join(lines)

@@ -19,6 +19,62 @@ COOKIE_JSON_FILE = os.path.join(BASE_DIR, "cookie.json")
 COOKIE_TXT_FILE = os.path.join(BASE_DIR, "cookie.txt")
 
 
+def normalize_cookie_text(text: str) -> str:
+    """Chuẩn hóa ký tự nháy kép thông minh và ký tự đặc biệt khi copy từ điện thoại/Telegram"""
+    if not text:
+        return ""
+    return (
+        text.replace('“', '"')
+        .replace('”', '"')
+        .replace('„', '"')
+        .replace('″', '"')
+        .replace('‘', "'")
+        .replace('’', "'")
+        .replace('`', "'")
+    )
+
+
+def extract_json_candidate(text: str) -> Any:
+    """Trích xuất và parse JSON từ text bất kể có văn bản thừa xung quanh hay không"""
+    clean_text = normalize_cookie_text(text.strip())
+
+    # 1. Thử parse trực tiếp
+    try:
+        return json.loads(clean_text)
+    except Exception:
+        pass
+
+    # 2. Tìm khối markdown ```json ... ``` hoặc ``` ... ```
+    blocks = re.findall(r'```(?:json)?\s*([\s\S]*?)\s*```', clean_text, re.IGNORECASE)
+    for block in blocks:
+        try:
+            return json.loads(block.strip())
+        except Exception:
+            pass
+
+    # 3. Tìm mảng [ ... ] lớn nhất
+    start_arr = clean_text.find('[')
+    end_arr = clean_text.rfind(']')
+    if start_arr != -1 and end_arr != -1 and end_arr > start_arr:
+        candidate = clean_text[start_arr:end_arr+1].strip()
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
+    # 4. Tìm object { ... } lớn nhất
+    start_obj = clean_text.find('{')
+    end_obj = clean_text.rfind('}')
+    if start_obj != -1 and end_obj != -1 and end_obj > start_obj:
+        candidate = clean_text[start_obj:end_obj+1].strip()
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
+    return None
+
+
 def parse_json_cookies(data: Any) -> List[Dict[str, Any]]:
     """
     Xử lý các dạng JSON cookie phổ biến (Cookie-Editor, EditThisCookie, key-value dict)
@@ -104,37 +160,29 @@ def parse_cookie_input(content: str) -> List[Dict[str, Any]]:
     """
     Tự động nhận diện định dạng (JSON hoặc raw text) và parse ra danh sách cookie
     """
-    content = content.strip()
     if not content:
         return []
 
-    # 1. Thử parse dạng JSON trước
-    try:
-        parsed_json = json.loads(content)
-        cookies = parse_json_cookies(parsed_json)
+    # 1. Trích xuất JSON (hỗ trợ cả khi có văn bản thừa hoặc dán qua Telegram)
+    json_data = extract_json_candidate(content)
+    if json_data:
+        cookies = parse_json_cookies(json_data)
         if cookies:
             return cookies
-    except Exception:
-        pass
 
-    # 2. Thử parse theo regex JSON nếu có bao quanh bởi markdown code block
-    json_block = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', content)
-    if json_block:
-        try:
-            parsed_json = json.loads(json_block.group(1).strip())
-            cookies = parse_json_cookies(parsed_json)
-            if cookies:
-                return cookies
-        except Exception:
-            pass
-
-    # 3. Parse theo chuỗi raw header
+    # 2. Parse theo chuỗi raw header
     return parse_raw_cookie_string(content)
 
 
 def save_cookies_list(cookies: List[Dict[str, Any]]) -> int:
+    """Lưu cookies vào lazada_cookies.json và đồng bộ cả cookie.json"""
     with open(COOKIES_FILE, "w", encoding="utf-8") as f:
         json.dump(cookies, f, indent=2, ensure_ascii=False)
+    try:
+        with open(COOKIE_JSON_FILE, "w", encoding="utf-8") as f:
+            json.dump(cookies, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
     return len(cookies)
 
 
@@ -167,7 +215,77 @@ def import_from_json_file(file_path: str = COOKIE_JSON_FILE) -> Tuple[bool, str]
         return False, "Không nhận diện được cookie hợp lệ trong file JSON."
 
     count = save_cookies_list(cookies)
-    return True, f"Đã nạp thành công {count} cookies từ {os.path.basename(file_path)} vào lazada_cookies.json"
+    return True, f"Đã nạp thành công {count} cookies từ {os.path.basename(file_path)}"
+
+
+def prompt_interactive_cookie() -> bool:
+    """
+    Hiển thị tùy chọn nạp cookie cho người dùng ở terminal console (đặc biệt hữu ích trên Termux)
+    trước khi bot bắt đầu chạy.
+    Trả về True nếu có nạp cookie mới, False nếu bỏ qua.
+    """
+    if not sys.stdin.isatty():
+        return False
+
+    print("\n" + "=" * 60)
+    print("🍪 [Termux / Console] TÙY CHỌN NẠP COOKIE LAZADA KHỞI ĐỘNG")
+    print("=" * 60)
+    print(" [1] Dán chuỗi JSON Cookie trực tiếp (1 dòng hoặc nhiều dòng)")
+    print(" [2] Nạp từ file cookie.json (hoặc đường dẫn tùy ý)")
+    print(" [Enter] Bỏ qua và dùng Cookie hiện tại để khởi động bot ngay")
+    print("-" * 60)
+
+    try:
+        choice = input("👉 Lựa chọn của bạn [1/2 hoặc nhấn Enter]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n[+] Đang tiếp tục khởi động bot...")
+        return False
+
+    if choice == "1":
+        print("\n📋 Hãy DÁN chuỗi JSON Cookie vào dưới đây.")
+        print("💡 Gõ 'done' hoặc 'xong' trên một dòng mới (hoặc nhấn Enter 2 lần) khi dán xong:")
+        lines = []
+        try:
+            while True:
+                line = input()
+                line_lower = line.strip().lower()
+                if line_lower in ("xong", "done", "q", "exit"):
+                    break
+                if not line.strip():
+                    if lines:
+                        candidate = "\n".join(lines)
+                        if parse_cookie_input(candidate):
+                            break
+                    else:
+                        break
+                lines.append(line)
+        except (EOFError, KeyboardInterrupt):
+            pass
+
+        content = "\n".join(lines).strip()
+        if content:
+            cookies = parse_cookie_input(content)
+            if cookies:
+                count = save_cookies_list(cookies)
+                print(f"✅ Đã nạp thành công {count} cookies vào lazada_cookies.json & cookie.json!\n")
+                return True
+            else:
+                print("❌ Không nhận diện được cookie hợp lệ từ nội dung dán. Đang giữ cookie cũ.\n")
+        else:
+            print("⚠️ Không có nội dung nào được nhập. Tiếp tục với cookie cũ.\n")
+
+    elif choice == "2":
+        try:
+            path_input = input("📂 Nhập đường dẫn file (mặc định: cookie.json): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            path_input = ""
+        file_path = path_input if path_input else COOKIE_JSON_FILE
+        success, msg = import_from_json_file(file_path)
+        print(f"[{'OK' if success else '!'}] {msg}\n")
+        return success
+
+    return False
+
 
 
 if __name__ == "__main__":
