@@ -213,6 +213,10 @@ def _extract_cart_and_summary(driver) -> tuple[List[Dict[str, Any]], Dict[str, A
                     sku_info = fields.get("sku", {}) or fields.get("skuInfo", {})
                     sku_text = sku_info.get("skuText", "")
                     url = fields.get("url") or fields.get("itemUrl") or ""
+                    if url:
+                        if url.startswith("//"):
+                            url = "https:" + url
+                        url = re.sub(r'lazada\.vn/+', 'lazada.vn/', url)
 
                     price_info = fields.get("price", {}) or {}
                     base_price = parse_price(price_info.get("price") or price_info.get("currentPrice"))
@@ -498,8 +502,13 @@ def format_changes_alert(changes: list, total_change: Optional[dict] = None) -> 
 
     for c in changes:
         c_type = c.get("type", "PRICE_CHANGE")
-        name = c["name"][:55]
-        sku = f" <i>[{c['sku']}]</i>" if c.get("sku") else ""
+        name = c["name"][:70]
+        sku_val = c.get("sku", "").strip()
+        sku_str = f"   🏷️ <i>Phân loại: <b>{sku_val}</b></i>\n" if sku_val else ""
+        raw_url = c.get("url", "").strip()
+        if raw_url and raw_url.startswith("//"):
+            raw_url = "https:" + raw_url
+        link_str = f"   🛒 <b>Link mua ngay:</b> <a href=\"{raw_url}\">Mở sản phẩm trên Lazada</a>\n" if raw_url else ""
 
         if c_type == "PRICE_CHANGE":
             icon = "📉" if c["direction"] == "GIẢM" else "📈"
@@ -507,16 +516,23 @@ def format_changes_alert(changes: list, total_change: Optional[dict] = None) -> 
             new_p = f"{c['new_price']:,.0f}₫"
             diff_str = f"{abs(c['diff']):,.0f}₫"
             lines.append(
-                f"{icon} <b>{name}</b>{sku}\n"
-                f"   {old_p} ➔ <b>{new_p}</b>\n"
-                f"   Biến động: <b>{c['direction']} {diff_str}</b> ({c['diff_pct']}%)\n"
+                f"{icon} <b>{name}</b>\n"
+                f"{sku_str}"
+                f"   💰 {old_p} ➔ <b>{new_p}</b>\n"
+                f"   ⚡ Biến động: <b>{c['direction']} {diff_str}</b> ({c['diff_pct']}%)\n"
+                f"{link_str}"
             )
         elif c_type == "STOCK_CHANGE":
             status = c["status"]
             icon = "🎉" if status == "CÓ HÀNG LẠI" else "⚠️"
+            price_val = c.get("price")
+            price_info = f"   💰 Giá hiện tại: <b>{price_val:,.0f}₫</b>\n" if price_val else ""
             lines.append(
-                f"{icon} <b>{name}</b>{sku}\n"
-                f"   Trạng thái tồn kho: <b>{status}</b>!\n"
+                f"{icon} <b>{name}</b>\n"
+                f"{sku_str}"
+                f"   📦 Trạng thái tồn kho: <b>{status}</b>!\n"
+                f"{price_info}"
+                f"{link_str}"
             )
 
     lines.append("👉 Gõ /cart để xem toàn bộ giỏ hàng ngay!")

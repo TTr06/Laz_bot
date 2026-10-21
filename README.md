@@ -10,13 +10,13 @@ Bot Telegram theo dõi biến động giá tự động cho toàn bộ sản ph�
 - 🎯 **Đọc Giá Thực Sau Voucher**: Tự động tick checkbox "Chọn tất cả" ngay tại giao diện giỏ hàng để Lazada kích hoạt Voucher & Khuyến mãi, sau đó trích xuất **Giá Cuối Cùng (Final Price)**.
 - 🚫 **An Toàn Tuyệt Đối**: Tuyệt đối **KHÔNG BAO GIỜ** click vào nút thanh toán (Checkout / Confirm Cart). Mọi thao tác chỉ diễn ra trong phạm vi trang giỏ hàng.
 - 🔍 **Theo Dõi Độc Lập Từng Phân Loại (SKU)**: Theo dõi riêng từng màu sắc, kích thước, cấu hình của mỗi mặt hàng trong giỏ.
-- ⏰ **Lịch Trình Quét Thông Minh**:
-  - **Khung giờ cao điểm săn sale** (`0h, 9h, 12h, 15h, 18h, 21h`): Quét **2 phút / lần** tính từ đầu giờ (`:00, :02, :04,...`).
-  - **Khung giờ thông thường**: Quét **5 phút / lần** (`:00, :05, :10, :15, :20, :25, :30, :35, :40, :45, :50, :55`).
-- 📢 **Cảnh Báo Telegram Realtime**: 
+- ⏰ **Tần Suất Quét Siêu Tốc**: Quét tự động **1 phút / lần** liên tục để bắt trọn mọi đợt giảm giá chớp nhoáng (Flash Sale) và voucher mới.
+- 📢 **Cảnh Báo Telegram Chi Tiết**: 
   - Tự động thông báo ngay khi có sản phẩm tăng/giảm giá hoặc thay đổi trạng thái tồn kho.
-  - Tự động thông báo khi Cookie hết hạn phiên đăng nhập để người dùng kịp thời cập nhật.
-- 🍪 **Hỗ Trợ Nạp Cookie Linh Hoạt**: Nạp trực tiếp qua file `cookie.json` hoặc bằng lệnh Telegram `/cookie <json>`.
+  - Gửi kèm đầy đủ **tên phân loại (SKU)** và **link mua hàng trực tiếp**.
+  - Tự động cảnh báo khi Cookie hết hạn phiên đăng nhập để người dùng kịp thời cập nhật.
+- 🛍️ **Thêm Vào Giỏ Hàng Trực Tiếp Bằng Link**: Gửi link sản phẩm Lazada (web hoặc app `s.lazada.vn`) hoặc lệnh `/add <link>`, bot sẽ tải thông tin và hiển thị danh sách phân loại (SKU) bằng nút bấm để bạn chọn và tự động thêm vào giỏ hàng.
+- 🍪 **Hỗ Trợ Nạp Cookie Linh Hoạt**: Nạp trực tiếp qua console khi khởi động trên Termux, gửi file `cookie.json` hoặc dán JSON vào chat Telegram.
 
 ---
 

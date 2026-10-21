@@ -1,9 +1,8 @@
 """
 Background Scheduler for Lazada Price Tracker
 Lịch trình tự động kiểm tra giỏ hàng:
-- Khung giờ thường: 5 phút / lần (tính chẵn từ đầu giờ: :00, :05, :10, :15, :20, :25, :30, :35, :40, :45, :50, :55)
-- Khung giờ cao điểm (0h, 9h, 12h, 15h, 18h, 21h): 2 phút / lần liên tục
-- Tự động phát hiện biến động giá của tất cả sản phẩm & phân loại và gửi tin nhắn Telegram
+- Quét liên tục: 1 phút / lần (tính chẵn từ đầu phút: :00, :01, :02, ...)
+- Tự động phát hiện biến động giá của tất cả sản phẩm & phân loại và gửi kèm link mua hàng qua Telegram
 - Tự động phát hiện và gửi cảnh báo Cookie hết hạn
 """
 
@@ -16,9 +15,6 @@ from subscriber_manager import get_subscribers, is_auto_track_enabled
 from price_tracker import track_prices, format_changes_alert
 
 logger = logging.getLogger(__name__)
-
-# Các khung giờ cao điểm (Flash Sale / Khuyến mãi lớn Lazada)
-PEAK_HOURS = [0, 9, 12, 15, 18, 21]
 
 # Biến lưu trạng thái scheduler
 scheduler_state = {
@@ -34,22 +30,14 @@ scheduler_state = {
 def calculate_next_run(now: datetime) -> Tuple[datetime, float, bool, int]:
     """
     Tính thời điểm chạy tiếp theo:
-    - Nếu trong khung giờ cao điểm (0, 9, 12, 15, 18, 21): 2 phút/lần
-    - Nếu trong khung giờ thường: 5 phút/lần (chẵn phút: :00, :05, :10, :15, :20, :25, :30, :35, :40, :45, :50, :55)
+    - Quét liên tục 1 phút / lần (tính chẵn từ đầu mỗi phút)
     """
-    is_peak = now.hour in PEAK_HOURS
-    interval_minutes = 2 if is_peak else 5
-
-    next_minute = (now.minute // interval_minutes + 1) * interval_minutes
-    if next_minute >= 60:
-        target = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-    else:
-        target = now.replace(minute=next_minute, second=0, microsecond=0)
-
+    interval_minutes = 1
+    target = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
     delay = (target - now).total_seconds()
-    # Đảm bảo delay tối thiểu 3 giây để tránh lặp tức thì
-    delay = max(delay, 3.0)
-    return target, delay, is_peak, interval_minutes
+    # Đảm bảo delay tối thiểu 2 giây để tránh lặp tức thì
+    delay = max(delay, 2.0)
+    return target, delay, False, interval_minutes
 
 
 async def broadcast_message(bot, text: str) -> int:
@@ -129,7 +117,7 @@ async def start_scheduler_loop(bot) -> None:
             now = datetime.now()
             target_time, delay_seconds, is_peak, interval_mins = calculate_next_run(now)
 
-            mode_str = f"Cao điểm ({interval_mins} phút/lần)" if is_peak else f"Bình thường ({interval_mins} phút/lần)"
+            mode_str = f"Quét liên tục ({interval_mins} phút/lần)"
             scheduler_state["current_mode"] = mode_str
             scheduler_state["next_check_time"] = target_time.strftime("%H:%M:%S %d/%m/%Y")
 
@@ -149,26 +137,24 @@ async def start_scheduler_loop(bot) -> None:
         except Exception as e:
             scheduler_state["last_error"] = str(e)
             logger.error(f"Lỗi trong vòng lặp scheduler: {e}", exc_info=True)
-            await asyncio.sleep(30)
+            await asyncio.sleep(15)
 
 
 def get_status_info() -> str:
     """Tạo báo cáo tình trạng hoạt động của scheduler"""
     now = datetime.now()
-    is_peak = now.hour in PEAK_HOURS
-    mode = "🔥 Cao điểm (2 phút/lần)" if is_peak else "⏰ Bình thường (5 phút/lần)"
+    mode = "⚡ Siêu tốc (1 phút/lần)"
     subs = get_subscribers()
     auto_status = "🟢 Đang bật" if is_auto_track_enabled() else "🔴 Đang tắt"
 
     lines = [
         "⏰ <b>LỊCH TRÌNH THEO DÕI GIÁ TỰ ĐỘNG:</b>\n",
         f"• Chế độ tự động: <b>{auto_status}</b>",
-        f"• Khung giờ hiện tại ({now.strftime('%H:%M')}): <b>{mode}</b>",
+        f"• Tần suất quét: <b>{mode}</b>",
         f"• Lần quét gần nhất: <i>{scheduler_state['last_check_time'] or 'Chưa có'}</i>",
         f"• Lần quét tiếp theo: <i>{scheduler_state['next_check_time'] or 'Đang tính toán...'}</i>",
         f"• Số người nhận thông báo: <b>{len(subs)}</b>\n",
-        "📌 <b>Quy định khung giờ:</b>",
-        "• <b>Khung giờ cao điểm</b> (<code>0h, 9h, 12h, 15h, 18h, 21h</code>): Quét liên tục <b>2 phút/lần</b>.",
-        "• <b>Các khung giờ còn lại</b>: Quét <b>5 phút/lần</b> (chẵn theo đầu giờ: :00, :05, :10, :15,...)."
+        "📌 <b>Quy định chu kỳ quét:</b>",
+        "• Bot tự động kiểm tra giỏ hàng <b>1 phút/lần</b> liên tục để phát hiện biến động giá và mã giảm giá ngay lập tức.",
     ]
     return "\n".join(lines)

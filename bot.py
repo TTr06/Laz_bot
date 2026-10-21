@@ -19,14 +19,17 @@ sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
 )
+
+from cart_adder import extract_lazada_url, fetch_product_details, add_sku_to_cart
 
 from cookie_manager import (
     parse_cookie_input,
@@ -76,9 +79,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"• Đăng nhập bằng Cookie (Không mở trình duyệt)\n"
         f"• Tự động tick <b>Chọn tất cả</b> để đọc giá sau Voucher & Khuyến mãi\n"
         f"• Theo dõi độc lập <b>tất cả phân loại (SKU)</b> của từng sản phẩm\n"
-        f"• Lịch quét thông minh: <b>5 phút/lần</b> (Khung 0h, 9h, 12h, 15h, 18h, 21h: <b>2 phút/lần</b>)\n"
-        f"• Tự động gửi thông báo khi <b>Biến động giá</b> hoặc <b>Cookie hết hạn</b>\n"
+        f"• Tần suất quét tự động: <b>1 phút/lần</b> liên tục để bắt trọn Flash Sale\n"
+        f"• Tự động gửi cảnh báo kèm <b>thông tin phân loại & link mua hàng</b>\n"
+        f"• <b>Thêm vào giỏ hàng bằng link</b>: Dán link sản phẩm là có nút chọn phân loại ngay\n"
         f"• An toàn tuyệt đối: Không bao giờ bấm vào trang thanh toán\n\n"
+        f"🔗 <b>Thêm sản phẩm mới vào giỏ:</b>\n"
+        f"Chỉ cần gửi link Lazada (hoặc gõ <code>/add &lt;link&gt;</code>) vào đây!\n\n"
         f"🔑 <b>Cách nạp Cookie Lazada:</b>\n"
         f"1. <b>Dán trực tiếp:</b> Copy JSON từ Cookie-Editor rồi dán thẳng vào tin nhắn này.\n"
         f"2. <b>Gửi file:</b> Kéo thả hoặc gửi file <code>cookie.json</code>.\n"
@@ -96,7 +102,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "🛒 <b>Quản lý Giỏ Hàng & Giá:</b>\n"
         "• <code>/cart</code> : Quét & hiển thị toàn bộ giỏ hàng với Giá Cuối Cùng\n"
         "• <code>/track</code> : Kiểm tra biến động giá ngay lập tức\n"
-        "• <code>/prices</code> : Xem danh sách giá các mặt hàng đã lưu\n\n"
+        "• <code>/prices</code> : Xem danh sách giá các mặt hàng đã lưu\n"
+        "• <code>/add &lt;link&gt;</code> : Thêm sản phẩm vào giỏ (chọn phân loại qua nút bấm)\n\n"
         "⏰ <b>Lịch Trình Tự Động:</b>\n"
         "• <code>/schedule</code> (hoặc <code>/auto</code>) : Xem tình trạng lịch quét tự động\n"
         "• <code>/check_now</code> : Kích hoạt 1 lượt quét giỏ hàng ngay\n"
@@ -179,15 +186,172 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await status_msg.edit_text(f"❌ Lỗi khi đọc file: {e}")
 
 
+async def handle_lazada_product_link(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> None:
+    """Xử lý link sản phẩm Lazada: lấy thông tin chi tiết và hiển thị nút chọn phân loại"""
+    auto_register_user(update)
+    msg = update.effective_message
+    if not msg:
+        return
+
+    status_msg = await msg.reply_text("🔍 Đang đọc thông tin sản phẩm và các phân loại từ Lazada...")
+
+    loop = asyncio.get_running_loop()
+    details = await loop.run_in_executor(None, lambda: fetch_product_details(url, headless=True))
+
+    if details.get("status") != "ok":
+        err_msg = details.get("message", "Không thể lấy thông tin sản phẩm từ link này.")
+        await status_msg.edit_text(f"❌ {err_msg}")
+        return
+
+    title = details.get("title") or "Sản phẩm Lazada"
+    price = details.get("price") or "N/A"
+    orig_price = details.get("original_price")
+    variations = details.get("variations") or []
+    prod_url = details.get("url") or url
+
+    # Lưu thông tin phiên chọn vào context.user_data
+    context.user_data["add_cart_session"] = {
+        "url": prod_url,
+        "title": title,
+        "price": price,
+        "variations": variations
+    }
+
+    price_line = f"💰 <b>Giá:</b> <code>{price}</code>"
+    if orig_price and orig_price != price:
+        price_line += f" <s>{orig_price}</s>"
+
+    header_text = (
+        f"🛍️ <b>THÔNG TIN SẢN PHẨM:</b>\n\n"
+        f"📦 <b>{title}</b>\n"
+        f"{price_line}\n"
+    )
+
+    if variations:
+        guide_text = header_text + f"\n👉 <b>Vui lòng bấm chọn Phân loại (SKU) để thêm vào giỏ:</b>"
+        keyboard = []
+        row = []
+        for idx, v in enumerate(variations):
+            btn_text = v["name"]
+            if v.get("selected"):
+                btn_text = f"🔘 {btn_text}"
+            row.append(InlineKeyboardButton(text=btn_text, callback_data=f"addcart:{idx}"))
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+        keyboard.append([InlineKeyboardButton(text="❌ Hủy bỏ", callback_data="addcart:cancel")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await status_msg.edit_text(guide_text, parse_mode="HTML", reply_markup=reply_markup)
+    else:
+        guide_text = header_text + f"\n<i>(Sản phẩm này có 1 phân loại mặc định)</i>"
+        keyboard = [
+            [InlineKeyboardButton(text="🛒 Thêm vào giỏ hàng ngay", callback_data="addcart:default")],
+            [InlineKeyboardButton(text="❌ Hủy bỏ", callback_data="addcart:cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await status_msg.edit_text(guide_text, parse_mode="HTML", reply_markup=reply_markup)
+
+
+async def handle_add_cart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Xử lý khi người dùng bấm nút chọn phân loại để thêm vào giỏ"""
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    data = query.data or ""
+    if not data.startswith("addcart:"):
+        return
+
+    action = data.split(":", 1)[1]
+    if action == "cancel":
+        await query.edit_message_text("❌ Đã hủy thao tác thêm vào giỏ hàng.")
+        context.user_data.pop("add_cart_session", None)
+        return
+
+    session = context.user_data.get("add_cart_session")
+    if not session:
+        await query.edit_message_text("⚠️ Phiên chọn sản phẩm đã hết hạn. Vui lòng gửi lại link sản phẩm.")
+        return
+
+    url = session.get("url")
+    title = session.get("title")
+    price = session.get("price")
+    variations = session.get("variations") or []
+
+    sku_name = None
+    if action.isdigit():
+        idx = int(action)
+        if 0 <= idx < len(variations):
+            sku_name = variations[idx]["name"]
+    elif action == "default":
+        sku_name = None
+
+    sku_display = f" <i>[Phân loại: <b>{sku_name}</b>]</i>" if sku_name else ""
+    await query.edit_message_text(f"⏳ Đang thêm{sku_display} vào giỏ hàng Lazada của bạn...", parse_mode="HTML")
+
+    loop = asyncio.get_running_loop()
+    res = await loop.run_in_executor(None, lambda: add_sku_to_cart(url, sku_name, headless=True))
+
+    if res.get("status") == "ok":
+        success_text = (
+            f"✅ <b>ĐÃ THÊM THÀNH CÔNG VÀO GIỎ HÀNG LAZADA!</b> 🎉\n\n"
+            f"📦 <b>Sản phẩm:</b> {title}\n"
+        )
+        if sku_name:
+            success_text += f"🏷️ <b>Phân loại:</b> <b>{sku_name}</b>\n"
+        if price:
+            success_text += f"💰 <b>Giá:</b> <code>{price}</code>\n"
+        success_text += "\n👉 Gõ <code>/cart</code> để xem toàn bộ giỏ hàng và kiểm tra giá sau Voucher ngay!"
+        await query.edit_message_text(success_text, parse_mode="HTML")
+    else:
+        err_msg = res.get("message", "Lỗi không xác định khi thêm vào giỏ.")
+        await query.edit_message_text(f"❌ {err_msg}")
+
+    context.user_data.pop("add_cart_session", None)
+
+
+async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Lệnh /add <link> để thêm sản phẩm vào giỏ"""
+    auto_register_user(update)
+    msg = update.effective_message
+    if not msg:
+        return
+
+    raw_text = " ".join(context.args) if context.args else ""
+    url = extract_lazada_url(raw_text)
+
+    if not url:
+        help_text = (
+            "📌 <b>Hướng dẫn thêm sản phẩm vào giỏ hàng:</b>\n\n"
+            "• Gõ lệnh kèm link: <code>/add &lt;link sản phẩm Lazada&gt;</code>\n"
+            "• Hoặc đơn giản là <b>dán thẳng link Lazada vào chat</b> này (hỗ trợ cả link app <code>s.lazada.vn</code>)!\n\n"
+            "Bot sẽ tự động tải các phân loại (màu sắc, cấu hình, kích cỡ) để bạn bấm chọn trước khi thêm."
+        )
+        await msg.reply_html(help_text)
+        return
+
+    await handle_lazada_product_link(update, context, url)
+
+
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Tự động phát hiện khi người dùng paste chuỗi JSON cookie trực tiếp mà không cần gõ /cookie"""
+    """Tự động phát hiện khi người dùng gửi link Lazada hoặc paste chuỗi JSON cookie trực tiếp"""
     auto_register_user(update)
     msg = update.effective_message
     if not msg or not msg.text:
         return
 
     text = msg.text.strip()
-    # Nhận diện nếu tin nhắn chứa JSON cookie hoặc chuỗi cookie Lazada
+
+    # 1. Tự động nhận diện nếu tin nhắn chứa link sản phẩm Lazada
+    laz_url = extract_lazada_url(text)
+    if laz_url:
+        await handle_lazada_product_link(update, context, laz_url)
+        return
+
+    # 2. Nhận diện nếu tin nhắn chứa JSON cookie hoặc chuỗi cookie Lazada
     has_cookie_markers = (
         ("[" in text and "]" in text) or
         ("{" in text and "}" in text) or
@@ -405,6 +569,10 @@ def main() -> None:
     app.add_handler(CommandHandler("cart", cart_command))
     app.add_handler(CommandHandler("track", track_command))
     app.add_handler(CommandHandler("prices", prices_command))
+    app.add_handler(CommandHandler("add", add_command))
+
+    # Handler chọn phân loại và thêm vào giỏ hàng qua nút bấm
+    app.add_handler(CallbackQueryHandler(handle_add_cart_callback, pattern=r"^addcart:"))
 
     # Handlers lịch trình tự động
     app.add_handler(CommandHandler("schedule", schedule_command))
