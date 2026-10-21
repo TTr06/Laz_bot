@@ -1,0 +1,54 @@
+[
+  {
+    "domain": ".lazada.vn",
+    "expirationDate": 1795170448,
+    "hostOnly": false,
+    "httpOnly": true,
+    "name": "sgcookie",
+    "path": "/",
+    "sameSite": "no_restriction",
+    "secure": true,
+    "session": false,
+    "storeId": null,
+    "value": "YOUR_SGCOOKIE_VALUE"
+  },
+  {
+    "domain": ".lazada.vn",
+    "expirationDate": 1792837648,
+    "hostOnly": false,
+    "httpOnly": true,
+    "name": "lzd_sid",
+    "path": "/",
+    "sameSite": "no_restriction",
+    "secure": true,
+    "session": false,
+    "storeId": null,
+    "value": "YOUR_LZD_SID_VALUE"
+  },
+  {
+    "domain": ".lazada.vn",
+    "expirationDate": 1806255757,
+    "hostOnly": false,
+    "httpOnly": false,
+    "name": "t_uid",
+    "path": "/",
+    "sameSite": "no_restriction",
+    "secure": true,
+    "session": false,
+    "storeId": null,
+    "value": "YOUR_T_UID_VALUE"
+  },
+  {
+    "domain": ".lazada.vn",
+    "expirationDate": 1792554891,
+    "hostOnly": false,
+    "httpOnly": false,
+    "name": "t_sid",
+    "path": "/",
+    "sameSite": "no_restriction",
+    "secure": true,
+    "session": false,
+    "storeId": null,
+    "value": "YOUR_T_SID_VALUE"
+  }
+]

@@ -1,0 +1,32 @@
+# Environment & API Keys
+.env
+
+# User authentication & Lazada Cookies (CONFIDENTIAL)
+cookie.json
+lazada_cookies.json
+cookie.txt
+cookie_input.json
+
+# User dynamic data & state
+price_history.json
+subscribers.json
+
+# Browser profile & cache
+chrome_profile/
+*.log
+
+# Debug dumps & Screenshots (Contains personal cart info)
+*.html
+*.png
+cart_after_select_all.json
+cart_init_data.json
+
+# Python cache & virtual environment
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.idea/
+.vscode/
