@@ -133,6 +133,59 @@ async def cookie_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Xử lý khi người dùng gửi file cookie.json hoặc cookie.txt đính kèm qua Telegram"""
+    auto_register_user(update)
+    msg = update.effective_message
+    if not msg or not msg.document:
+        return
+
+    doc = msg.document
+    file_name = doc.file_name or ""
+    if not (file_name.endswith(".json") or file_name.endswith(".txt")):
+        return
+
+    status_msg = await msg.reply_text("📥 Đang nhận và giải mã file cookie...")
+    try:
+        tg_file = await doc.get_file()
+        file_bytes = await tg_file.download_as_bytearray()
+        content = file_bytes.decode("utf-8", errors="replace")
+
+        cookies = parse_cookie_input(content)
+        if not cookies:
+            await status_msg.edit_text("❌ Không thể đọc cookie từ file. Vui lòng kiểm tra định dạng file JSON.")
+            return
+
+        count = save_cookies_list(cookies)
+        await status_msg.edit_text(
+            f"✅ <b>Đã nạp thành công {count} cookies từ file {file_name}!</b>\n"
+            f"👉 Hãy gõ <code>/cart</code> để kiểm tra giỏ hàng ngay!",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Lỗi khi đọc file: {e}")
+
+
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Tự động phát hiện khi người dùng paste chuỗi JSON cookie trực tiếp mà không cần gõ /cookie"""
+    auto_register_user(update)
+    msg = update.effective_message
+    if not msg or not msg.text:
+        return
+
+    text = msg.text.strip()
+    # Nhận diện nếu tin nhắn là JSON mảng cookie hoặc chuỗi cookie
+    if (text.startswith("[") and text.endswith("]")) or (text.startswith("{") and text.endswith("}")) or "lzd_sid=" in text or "t_sid=" in text:
+        cookies = parse_cookie_input(text)
+        if cookies and len(cookies) > 0:
+            count = save_cookies_list(cookies)
+            await msg.reply_html(
+                f"✅ <b>Đã tự động nhận diện và nạp {count} cookies!</b>\n"
+                f"👉 Hãy gõ <code>/cart</code> để kiểm tra giỏ hàng ngay!"
+            )
+            return
+
+
 async def cookie_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     auto_register_user(update)
     msg = update.effective_message
@@ -334,6 +387,10 @@ def main() -> None:
     # Handlers Cookie
     app.add_handler(CommandHandler("cookie", cookie_command))
     app.add_handler(CommandHandler("cookie_status", cookie_status_command))
+
+    # Tự động nạp khi gửi file cookie (.json / .txt) hoặc paste JSON trực tiếp
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
     print("[OK] Bot đã sẵn sàng nhận lệnh từ Telegram.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
