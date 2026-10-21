@@ -218,7 +218,7 @@ async def cart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     status_msg = await msg.reply_text("⏳ Đang quét giỏ hàng, chọn tất cả sản phẩm và đọc Giá Cuối Cùng...")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, lambda: scrape_cart(headless=True))
 
     if result["status"] == "need_login":
@@ -255,7 +255,7 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     status_msg = await msg.reply_text("🔍 Đang kiểm tra biến động giá thực tế của tất cả phân loại...")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, lambda: track_prices(headless=True))
 
     if result["status"] != "ok":
@@ -357,6 +357,13 @@ async def post_init(application: Application) -> None:
 
 
 def main() -> None:
+    # Khởi tạo event loop cho MainThread (sửa lỗi RuntimeError trên Python 3.12, 3.13 và 3.14)
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token or token == "YOUR_BOT_TOKEN_HERE":
         print("[!] Lỗi: Chưa có TELEGRAM_BOT_TOKEN trong file .env")
