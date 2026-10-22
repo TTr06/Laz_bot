@@ -53,13 +53,28 @@ from subscriber_manager import (
     set_auto_track_enabled,
 )
 from scheduler import start_scheduler_loop, get_status_info, run_single_check
+from dashboard import dashboard, DashboardLogHandler, run_dashboard_loop
 
 load_dotenv()
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
+is_tui = sys.stdout.isatty() and os.getenv("DISABLE_DASHBOARD") != "1"
+
+if is_tui:
+    dash_handler = DashboardLogHandler()
+    dash_handler.setFormatter(logging.Formatter("%(message)s"))
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    for h in list(root_logger.handlers):
+        root_logger.removeHandler(h)
+    root_logger.addHandler(dash_handler)
+else:
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=logging.INFO,
+    )
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -149,6 +164,7 @@ async def cookie_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     count = save_cookies_list(cookies)
+    dashboard.set_cookie_status(True)
     await msg.reply_html(
         f"✅ <b>Đã nạp thành công {count} cookies!</b>\n"
         f"👉 Hãy gõ <code>/cart</code> để kiểm tra giỏ hàng và giá thực tế ngay!"
@@ -177,6 +193,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         count = save_cookies_list(cookies)
+        dashboard.set_cookie_status(True)
         await status_msg.edit_text(
             f"✅ <b>Đã nạp thành công {count} cookies từ file {file_name}!</b>\n"
             f"👉 Hãy gõ <code>/cart</code> để kiểm tra giỏ hàng ngay!",
@@ -364,6 +381,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         cookies = parse_cookie_input(text)
         if cookies and len(cookies) > 0:
             count = save_cookies_list(cookies)
+            dashboard.set_cookie_status(True)
             await msg.reply_html(
                 f"✅ <b>Đã tự động nhận diện và nạp {count} cookies!</b>\n"
                 f"👉 Hãy gõ <code>/cart</code> để kiểm tra giỏ hàng ngay!"
@@ -407,6 +425,7 @@ async def cart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     result = await loop.run_in_executor(None, lambda: scrape_cart(headless=True))
 
     if result["status"] == "need_login":
+        dashboard.set_cookie_status(False)
         await status_msg.edit_text(
             f"❌ {result['message']}\n\n"
             f"👉 Dùng lệnh: <code>/cookie &lt;nội_dung&gt;</code> để nạp cookie mới.",
@@ -422,8 +441,10 @@ async def cart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await status_msg.edit_text(f"❌ {result['message']}")
         return
 
+    dashboard.set_cookie_status(True)
     products = result["products"]
     summary = result.get("summary", {})
+    dashboard.update_cart(products, summary)
     messages = format_cart_messages(products, summary)
 
     if messages:
@@ -443,14 +464,22 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, lambda: track_prices(headless=True))
 
+    if result["status"] == "need_login":
+        dashboard.set_cookie_status(False)
+        await status_msg.edit_text(f"❌ {result['message']}")
+        return
+
     if result["status"] != "ok":
         await status_msg.edit_text(f"❌ {result['message']}")
         return
 
+    dashboard.set_cookie_status(True)
     total = result["total_products"]
     changes = result["changes"]
     total_change = result.get("total_change")
     summary = result.get("summary", {})
+    if result.get("products"):
+        dashboard.update_cart(result["products"], summary)
 
     summary_header = f"📊 Đã chọn & kiểm tra <b>{total}</b> phân loại sản phẩm trong giỏ.\n"
     if summary and "Total" in summary:
@@ -508,6 +537,7 @@ async def sub_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     chat_id = update.effective_chat.id if update.effective_chat else None
     if chat_id:
         add_subscriber(chat_id)
+        dashboard.set_subscribers_count(len(get_subscribers()))
         if update.effective_message:
             await update.effective_message.reply_text("✅ Bạn đã đăng ký nhận thông báo biến động giá tự động!")
 
@@ -516,6 +546,7 @@ async def unsub_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     chat_id = update.effective_chat.id if update.effective_chat else None
     if chat_id:
         remove_subscriber(chat_id)
+        dashboard.set_subscribers_count(len(get_subscribers()))
         if update.effective_message:
             await update.effective_message.reply_text("❌ Bạn đã hủy nhận thông báo tự động.")
 
@@ -536,9 +567,13 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def post_init(application: Application) -> None:
-    """Khởi động tác vụ background scheduler ngay khi bot chạy"""
+    """Khởi động tác vụ background scheduler và dashboard ngay khi bot chạy"""
     asyncio.create_task(start_scheduler_loop(application.bot))
-    logger.info("[OK] Background scheduler task đã được khởi tạo trong asyncio event loop.")
+    logger.info("[OK] Background scheduler task đã khởi động.")
+
+    dashboard.set_subscribers_count(len(get_subscribers()))
+    if sys.stdout.isatty() and os.getenv("DISABLE_DASHBOARD") != "1":
+        asyncio.create_task(run_dashboard_loop())
 
 
 def main() -> None:

@@ -13,6 +13,7 @@ from typing import Optional, Tuple
 
 from subscriber_manager import get_subscribers, is_auto_track_enabled
 from price_tracker import track_prices, format_changes_alert
+from dashboard import dashboard
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,8 @@ async def run_single_check(bot) -> None:
     now = datetime.now()
     scheduler_state["last_check_time"] = now.strftime("%H:%M:%S %d/%m/%Y")
     logger.info(f"[*] Bắt đầu quét giỏ hàng tự động lúc {scheduler_state['last_check_time']}...")
+    dashboard.increment_checks()
+    dashboard.set_subscribers_count(len(get_subscribers()))
 
     try:
         result = await asyncio.to_thread(track_prices, True)
@@ -78,6 +81,7 @@ async def run_single_check(bot) -> None:
 
     # 1. Xử lý trường hợp Cookie hết hạn
     if status == "need_login":
+        dashboard.set_cookie_status(False)
         if not scheduler_state["cookie_alert_sent"]:
             alert_text = (
                 "🚨 <b>CẢNH BÁO: COOKIE LAZADA ĐÃ HẾT HẠN!</b>\n\n"
@@ -92,7 +96,13 @@ async def run_single_check(bot) -> None:
 
     # Nếu thành công, reset cờ cảnh báo cookie
     if status == "ok":
+        dashboard.set_cookie_status(True)
         scheduler_state["cookie_alert_sent"] = False
+
+        products = result.get("products", [])
+        summary = result.get("summary", {})
+        if products:
+            dashboard.update_cart(products, summary)
 
         changes = result.get("changes", [])
         total_change = result.get("total_change")
@@ -116,6 +126,7 @@ async def start_scheduler_loop(bot) -> None:
         try:
             now = datetime.now()
             target_time, delay_seconds, is_peak, interval_mins = calculate_next_run(now)
+            dashboard.set_next_check(target_time)
 
             mode_str = f"Quét liên tục ({interval_mins} phút/lần)"
             scheduler_state["current_mode"] = mode_str
