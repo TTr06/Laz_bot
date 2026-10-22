@@ -94,7 +94,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"• Đăng nhập bằng Cookie (Không mở trình duyệt)\n"
         f"• Tự động tick <b>Chọn tất cả</b> để đọc giá sau Voucher & Khuyến mãi\n"
         f"• Theo dõi độc lập <b>tất cả phân loại (SKU)</b> của từng sản phẩm\n"
-        f"• Tần suất quét tự động: <b>1 phút/lần</b> liên tục để bắt trọn Flash Sale\n"
+        f"• Tần suất quét: <b>1 phút/lần</b> (15p đầu giờ) & <b>5 phút/lần</b> (đến hết giờ)\n"
         f"• Tự động gửi cảnh báo kèm <b>thông tin phân loại & link mua hàng</b>\n"
         f"• <b>Thêm vào giỏ hàng bằng link</b>: Dán link sản phẩm là có nút chọn phân loại ngay\n"
         f"• An toàn tuyệt đối: Không bao giờ bấm vào trang thanh toán\n\n"

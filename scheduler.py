@@ -17,6 +17,14 @@ from dashboard import dashboard
 
 logger = logging.getLogger(__name__)
 
+# Các mốc phút kiểm tra trong mỗi giờ:
+# - 15 phút đầu giờ (:00 đến :15): quét 1 phút / lần (lần cuối ở phút 15)
+# - Sau đó cho đến hết giờ (:20 đến :55): quét 5 phút / lần
+SCHEDULED_MINUTES = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    20, 25, 30, 35, 40, 45, 50, 55
+]
+
 # Biến lưu trạng thái scheduler
 scheduler_state = {
     "is_running": False,
@@ -31,14 +39,23 @@ scheduler_state = {
 def calculate_next_run(now: datetime) -> Tuple[datetime, float, bool, int]:
     """
     Tính thời điểm chạy tiếp theo:
-    - Quét liên tục 1 phút / lần (tính chẵn từ đầu mỗi phút)
+    - Đầu mỗi giờ (:00 đến :15): quét 1 phút / lần (phút 15 là lần cuối của chu kỳ 1p)
+    - Sau phút 15 đến hết giờ (:20, :25, ... :55): quét 5 phút / lần
     """
-    interval_minutes = 1
-    target = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
-    delay = (target - now).total_seconds()
-    # Đảm bảo delay tối thiểu 2 giây để tránh lặp tức thì
-    delay = max(delay, 2.0)
-    return target, delay, False, interval_minutes
+    target = None
+    for m in SCHEDULED_MINUTES:
+        candidate = now.replace(minute=m, second=0, microsecond=0)
+        if (candidate - now).total_seconds() >= 2.0:
+            target = candidate
+            break
+
+    if target is None:
+        target = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+
+    delay = max((target - now).total_seconds(), 2.0)
+    is_peak = (target.minute <= 15 and target.minute != 0) or (target.minute == 0)
+    interval_minutes = 1 if is_peak else 5
+    return target, delay, is_peak, interval_minutes
 
 
 async def broadcast_message(bot, text: str) -> int:
@@ -128,7 +145,8 @@ async def start_scheduler_loop(bot) -> None:
             target_time, delay_seconds, is_peak, interval_mins = calculate_next_run(now)
             dashboard.set_next_check(target_time)
 
-            mode_str = f"Quét liên tục ({interval_mins} phút/lần)"
+            phase_label = "Đầu giờ (:00-:15)" if is_peak else "Sau phút 15 (:20-:55)"
+            mode_str = f"{phase_label} - {interval_mins}p/lần"
             scheduler_state["current_mode"] = mode_str
             scheduler_state["next_check_time"] = target_time.strftime("%H:%M:%S %d/%m/%Y")
 
@@ -154,18 +172,19 @@ async def start_scheduler_loop(bot) -> None:
 def get_status_info() -> str:
     """Tạo báo cáo tình trạng hoạt động của scheduler"""
     now = datetime.now()
-    mode = "⚡ Siêu tốc (1 phút/lần)"
     subs = get_subscribers()
     auto_status = "🟢 Đang bật" if is_auto_track_enabled() else "🔴 Đang tắt"
+    current_phase = "⚡ Đầu giờ (1 phút/lần)" if now.minute <= 15 else "⏳ Sau phút 15 (5 phút/lần)"
 
     lines = [
         "⏰ <b>LỊCH TRÌNH THEO DÕI GIÁ TỰ ĐỘNG:</b>\n",
         f"• Chế độ tự động: <b>{auto_status}</b>",
-        f"• Tần suất quét: <b>{mode}</b>",
+        f"• Giai đoạn hiện tại: <b>{current_phase}</b>",
         f"• Lần quét gần nhất: <i>{scheduler_state['last_check_time'] or 'Chưa có'}</i>",
         f"• Lần quét tiếp theo: <i>{scheduler_state['next_check_time'] or 'Đang tính toán...'}</i>",
         f"• Số người nhận thông báo: <b>{len(subs)}</b>\n",
         "📌 <b>Quy định chu kỳ quét:</b>",
-        "• Bot tự động kiểm tra giỏ hàng <b>1 phút/lần</b> liên tục để phát hiện biến động giá và mã giảm giá ngay lập tức.",
+        "• <b>15 phút đầu mỗi giờ (:00 - :15):</b> Quét <b>1 phút/lần</b> (phút 15 là lần quét 1p cuối cùng).",
+        "• <b>Sau phút 15 đến hết giờ (:20 - :55):</b> Quét <b>5 phút/lần</b> cho đến khi sang giờ mới.",
     ]
     return "\n".join(lines)

@@ -148,8 +148,9 @@ class HostDashboard:
         table.add_column(justify="center", ratio=4)
         table.add_column(justify="right", ratio=3)
 
+        cycle_badge = "[bold yellow]1m[/]" if now.minute <= 15 else "[bold yellow]5m[/]"
         left_text = Text.from_markup("⚡ [bold white]LAZADA BOT[/] [bold green]● LIVE[/]")
-        center_text = Text.from_markup(f"Chu kỳ: [bold yellow]1m[/] | Kế tiếp: [bold cyan]{countdown}s[/]")
+        center_text = Text.from_markup(f"Chu kỳ: {cycle_badge} | Kế tiếp: [bold cyan]{countdown}s[/]")
         right_text = Text.from_markup(f"Subs: [bold green]{self.subscribers_count}[/] | Uptime: [bold white]{uptime}[/]")
 
         table.add_row(left_text, center_text, right_text)
