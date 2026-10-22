@@ -13,7 +13,7 @@ import time
 import urllib.request
 from typing import Optional, List, Dict, Any
 
-from anti_detect import create_stealth_driver, load_cookies, save_cookies, safe_quit
+from anti_detect import create_stealth_driver, load_cookies, save_cookies, safe_quit, safe_get
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ def fetch_product_details(url: str, headless: bool = True) -> Dict[str, Any]:
     try:
         driver = create_stealth_driver(headless=headless)
         load_cookies(driver)
-        driver.get(url)
+        safe_get(driver, url, timeout=45)
         time.sleep(3.5)
 
         # Trích xuất dữ liệu chi tiết
@@ -189,7 +189,7 @@ def add_sku_to_cart(url: str, sku_name: Optional[str] = None, headless: bool = T
                 "message": "Không nạp được cookie đăng nhập. Vui lòng nạp lại cookie Lazada qua lệnh /cookie."
             }
 
-        driver.get(url)
+        safe_get(driver, url, timeout=45)
         time.sleep(3.5)
 
         # 1. Nếu có phân loại, click chọn phân loại đó

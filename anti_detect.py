@@ -113,6 +113,13 @@ def create_stealth_driver(headless: bool = True) -> webdriver.Chrome:
     options.add_argument("--disable-popup-blocking")
     options.add_argument("--lang=vi-VN,vi,en-US,en")
 
+    # Ngăn lỗi renderer timeout do hệ điều hành throttle tiến trình trên Android / Linux / PRoot
+    options.add_argument("--disable-renderer-backgrounding")
+    options.add_argument("--disable-backgrounding-occluded-windows")
+    options.add_argument("--disable-background-timer-throttling")
+    options.add_argument("--disable-ipc-flooding-protection")
+    options.add_argument("--dns-prefetch-disable")
+
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
 
@@ -147,7 +154,7 @@ def create_stealth_driver(headless: bool = True) -> webdriver.Chrome:
             driver = webdriver.Chrome(options=alt_options)
         except Exception:
             raise e
-    driver.set_page_load_timeout(20)
+    driver.set_page_load_timeout(45)
 
     # CDP evasions
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
@@ -164,6 +171,25 @@ def create_stealth_driver(headless: bool = True) -> webdriver.Chrome:
     return driver
 
 
+def safe_get(driver, url: str, timeout: int = 45) -> None:
+    """
+    Điều hướng tới URL với cơ chế xử lý timeout mượt mà:
+    Nếu gặp timeout do renderer bị delay trên thiết bị yếu/Termux, dừng tải ngầm (window.stop) và tiếp tục xử lý DOM.
+    """
+    try:
+        driver.set_page_load_timeout(timeout)
+        driver.get(url)
+    except Exception as e:
+        err_msg = str(e).lower()
+        if "timeout" in err_msg or "timed out" in err_msg:
+            try:
+                driver.execute_script("window.stop();")
+            except Exception:
+                pass
+        else:
+            raise e
+
+
 def load_cookies(driver) -> bool:
     """Nạp cookie qua giao thức CDP áp dụng cho toàn bộ domain Lazada"""
     if not os.path.exists(COOKIES_FILE):
@@ -178,9 +204,9 @@ def load_cookies(driver) -> bool:
     if not cookies:
         return False
 
-    # Mở domain cơ sở
-    driver.get("https://www.lazada.vn")
-    time.sleep(1.5)
+    # Mở origin cơ sở siêu nhẹ (robots.txt) thay vì trang chủ để không bị lag, giảm tải RAM và tránh renderer timeout
+    safe_get(driver, "https://www.lazada.vn/robots.txt", timeout=20)
+    time.sleep(0.5)
 
     cdp_cookies = []
     for c in cookies:

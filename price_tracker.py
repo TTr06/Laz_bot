@@ -25,6 +25,7 @@ from anti_detect import (
     load_cookies,
     save_cookies,
     safe_quit,
+    safe_get,
     COOKIES_FILE,
 )
 
@@ -88,8 +89,8 @@ def scrape_cart(headless: bool = True) -> Dict[str, Any]:
                 "summary": {}
             }
 
-        # 1. Truy cập duy nhất trang giỏ hàng
-        driver.get(CART_URL)
+        # 1. Truy cập duy nhất trang giỏ hàng (áp dụng safe_get chống timeout renderer)
+        safe_get(driver, CART_URL, timeout=45)
         time.sleep(3.5)
 
         cur_url = driver.current_url.lower()
