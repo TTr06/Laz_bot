@@ -1,6 +1,6 @@
 """
-Father Bot - Host Terminal CLI Dashboard (DEMO)
-Chạy bản demo độc lập để trải nghiệm giao diện TUI 2 cột tinh gọn:
+Father Bot - Host Terminal CLI (DEMO)
+Chạy bản demo độc lập để trải nghiệm giao diện CLI Log tinh gọn kèm theo dõi kết nối Internet:
 python demo_dashboard.py
 """
 
@@ -8,61 +8,65 @@ import sys
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
-import os
 import time
-import random
 from datetime import datetime, timedelta
 
-from rich.live import Live
-from dashboard import dashboard
+from dashboard import check_internet, format_net_badge, print_cli, log_check_result
+
 
 def run_demo():
-    # Nạp một số log mẫu ban đầu nếu dashboard chưa có log
-    if not dashboard.logs:
-        demo_logs = [
-            ("INFO", "Hệ thống Lazada Bot khởi động trên host."),
-            ("OK", "Đã nạp 15 cookies Lazada với đầy đủ phiên auth."),
-            ("OK", "Stealth Driver sẵn sàng (CDP Bypass)."),
-            ("INFO", "Scheduler khởi động: Lịch quét tự động 1m."),
-            ("OK", "Đã kết nối Telegram Bot thành công."),
-            ("INFO", "Bắt đầu quét giỏ hàng tự động..."),
-            ("OK", "Đã chọn tất cả sản phẩm trong giỏ."),
-            ("WARN", "Phát hiện biến động giá: Giảm 15%!"),
-            ("OK", "Đã gửi thông báo biến động qua Telegram.")
-        ]
-        for lvl, msg in demo_logs:
-            dashboard.add_log(lvl, msg)
+    print_cli("==================================================================")
+    print_cli("🤖 [bold white]FATHER BOT - LAZADA PRICE TRACKER (CLI LOG MODE)[/]")
+    print_cli("==================================================================")
 
-    dashboard.set_subscribers_count(1)
-    dashboard.set_next_check(datetime.now() + timedelta(seconds=45))
+    is_online, latency = check_internet()
+    badge = format_net_badge(is_online, latency)
+    print_cli(f"{badge} [bold green]Hệ thống khởi động thành công.[/] Lịch: 1p/lần (:00-:15) & 5p/lần (:20-:55)")
+    print_cli(f"{badge} [bold green]Đã nạp 15 cookies Lazada.[/] Phiên auth đầy đủ.")
+    print_cli(f"{badge} [bold green]Telegram Bot sẵn sàng nhận lệnh[/] (1 subscribers)")
+    print_cli("------------------------------------------------------------------")
 
-    console = dashboard.console
-    with Live(dashboard.generate_layout(), console=console, refresh_per_second=2, screen=True) as live:
-        dashboard.live = live
-        dashboard.is_running = True
-        step = 0
-        try:
-            while dashboard.is_running:
-                step += 1
-                live.update(dashboard.generate_layout())
-                time.sleep(1)
+    sample_products = [
+        {"name": "SmartDevil Cường lực", "sku": "2 miếng", "price": 117000},
+        {"name": "Cáp sạc Ugreen Type-C", "sku": "Đen 20cm", "price": 60000},
+        {"name": "Chuột không dây Logitech", "sku": "Màu xám", "price": 250000},
+    ]
+    summary = {"Total": "427,000₫"}
 
-                # Cứ 15s mô phỏng 1 sự kiện ngẫu nhiên trong demo
-                if step % 15 == 0:
-                    events = [
-                        ("INFO", "Scheduler kích hoạt lượt quét tự động 1m..."),
-                        ("OK", "Chọn tất cả sản phẩm và đọc giá khuyến mãi thành công."),
-                        ("INFO", "Kiểm tra 19 SKU trong giỏ hàng hoàn tất."),
-                        ("WARN", "Phát hiện Flash Sale Lazada cho 1 SKU!"),
-                        ("OK", "Cảnh báo biến động giá đã gửi tới 1 subscribers.")
-                    ]
-                    lvl, txt = random.choice(events)
-                    dashboard.add_log(lvl, txt)
-                    dashboard.increment_checks()
-                    dashboard.set_next_check(datetime.now() + timedelta(seconds=60))
+    # Mô phỏng các lượt quét (có đo kết nối Internet thực tế)
+    for check_num in range(1, 5):
+        is_online, latency = check_internet()
+        next_time = datetime.now() + timedelta(minutes=1)
 
-        except KeyboardInterrupt:
-            pass
+        # Mô phỏng lượt check thứ 3 có biến động giá
+        changes = []
+        if check_num == 3:
+            changes = [{"name": "SmartDevil Cường lực", "diff": -15000, "direction": "GIẢM"}]
+            summary = {"Total": "412,000₫"}
+
+        log_check_result(
+            check_num=check_num,
+            status="ok",
+            products=sample_products,
+            summary=summary,
+            changes=changes,
+            next_time=next_time,
+            interval_mins=1,
+            is_online=is_online,
+            latency=latency
+        )
+        time.sleep(1.5)
+
+    # Mô phỏng tình huống ngắt mạng
+    log_check_result(
+        check_num=5,
+        status="offline",
+        is_online=False,
+        latency=-1
+    )
+
+    print_cli("------------------------------------------------------------------")
+    print_cli("[dim]Hoàn tất demo. Chạy 'python bot.py' để vận hành bot chính thức.[/]")
 
 
 if __name__ == "__main__":

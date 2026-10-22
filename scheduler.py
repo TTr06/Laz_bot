@@ -13,7 +13,13 @@ from typing import Optional, Tuple
 
 from subscriber_manager import get_subscribers, is_auto_track_enabled
 from price_tracker import track_prices, format_changes_alert
-from dashboard import dashboard
+from dashboard import (
+    dashboard,
+    check_internet,
+    format_net_badge,
+    print_cli,
+    log_check_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,25 +86,49 @@ async def broadcast_message(bot, text: str) -> int:
     return success_count
 
 
-async def run_single_check(bot) -> None:
-    """Thực hiện một lần quét giỏ hàng và gửi cảnh báo nếu có thay đổi hoặc cookie hết hạn"""
+async def run_single_check(bot, next_target: Optional[datetime] = None, interval_mins: int = 1) -> None:
+    """Thực hiện một lần quét giỏ hàng và in đúng 1 dòng log trạng thái kèm Internet"""
     now = datetime.now()
     scheduler_state["last_check_time"] = now.strftime("%H:%M:%S %d/%m/%Y")
-    logger.info(f"[*] Bắt đầu quét giỏ hàng tự động lúc {scheduler_state['last_check_time']}...")
     dashboard.increment_checks()
     dashboard.set_subscribers_count(len(get_subscribers()))
 
+    # 1. Đo kiểm tra kết nối Internet
+    is_online, latency = await asyncio.to_thread(check_internet)
+    if not is_online:
+        log_check_result(
+            check_num=dashboard.total_checks,
+            status="offline",
+            is_online=False,
+            latency=latency
+        )
+        return
+
+    # 2. Quét giỏ hàng
     try:
         result = await asyncio.to_thread(track_prices, True)
     except Exception as e:
         logger.error(f"Lỗi khi chạy track_prices: {e}", exc_info=True)
+        log_check_result(
+            check_num=dashboard.total_checks,
+            status="error",
+            is_online=True,
+            latency=latency,
+            error_msg=str(e)
+        )
         return
 
     status = result.get("status")
 
-    # 1. Xử lý trường hợp Cookie hết hạn
+    # Xử lý trường hợp Cookie hết hạn
     if status == "need_login":
         dashboard.set_cookie_status(False)
+        log_check_result(
+            check_num=dashboard.total_checks,
+            status="need_login",
+            is_online=True,
+            latency=latency
+        )
         if not scheduler_state["cookie_alert_sent"]:
             alert_text = (
                 "🚨 <b>CẢNH BÁO: COOKIE LAZADA ĐÃ HẾT HẠN!</b>\n\n"
@@ -124,20 +154,41 @@ async def run_single_check(bot) -> None:
         changes = result.get("changes", [])
         total_change = result.get("total_change")
 
-        # 2. Xử lý trường hợp có biến động giá sản phẩm hoặc phân loại
+        # In đúng 1 dòng log duy nhất bao gồm trạng thái giỏ + internet
+        log_check_result(
+            check_num=dashboard.total_checks,
+            status="ok",
+            products=products,
+            summary=summary,
+            changes=changes,
+            next_time=next_target,
+            interval_mins=interval_mins,
+            is_online=True,
+            latency=latency
+        )
+
+        # Xử lý trường hợp có biến động giá sản phẩm hoặc phân loại
         if changes or total_change:
             alert_msg = format_changes_alert(changes, total_change)
             if alert_msg:
-                logger.info(f"Phát hiện {len(changes)} thay đổi giá! Đang gửi cảnh báo...")
                 await broadcast_message(bot, alert_msg)
-        else:
-            logger.info("Quét hoàn tất: Không có biến động giá.")
+    else:
+        log_check_result(
+            check_num=dashboard.total_checks,
+            status=status or "error",
+            is_online=True,
+            latency=latency,
+            error_msg=result.get("message")
+        )
 
 
 async def start_scheduler_loop(bot) -> None:
     """Vòng lặp tự động chạy kiểm tra theo lịch"""
     scheduler_state["is_running"] = True
-    logger.info("🚀 Scheduler tự động theo dõi giá đã khởi động.")
+
+    is_online, latency = await asyncio.to_thread(check_internet)
+    badge = format_net_badge(is_online, latency)
+    print_cli(f"{badge} [bold cyan]Scheduler tự động đã khởi động:[/] 1p/lần (:00-:15) & 5p/lần (:20-:55)")
 
     while True:
         try:
@@ -150,14 +201,14 @@ async def start_scheduler_loop(bot) -> None:
             scheduler_state["current_mode"] = mode_str
             scheduler_state["next_check_time"] = target_time.strftime("%H:%M:%S %d/%m/%Y")
 
-            logger.info(f"Lần check tiếp theo lúc {target_time.strftime('%H:%M:%S')} (sau {int(delay_seconds)}s) [{mode_str}]")
-
             # Chờ đến thời điểm kế tiếp
             await asyncio.sleep(delay_seconds)
 
             # Kiểm tra nếu tính năng auto track đang được bật
             if is_auto_track_enabled():
-                await run_single_check(bot)
+                # Tính trước mốc tiếp sau để hiển thị 'Kế tiếp' trên dòng log
+                next_after, _, _, next_interval = calculate_next_run(datetime.now())
+                await run_single_check(bot, next_target=next_after, interval_mins=next_interval)
 
         except asyncio.CancelledError:
             scheduler_state["is_running"] = False

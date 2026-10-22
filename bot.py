@@ -53,25 +53,21 @@ from subscriber_manager import (
     set_auto_track_enabled,
 )
 from scheduler import start_scheduler_loop, get_status_info, run_single_check
-from dashboard import dashboard, DashboardLogHandler, run_dashboard_loop
+from dashboard import (
+    dashboard,
+    check_internet,
+    format_net_badge,
+    print_cli,
+    log_check_result,
+)
 
 load_dotenv()
 
-is_tui = sys.stdout.isatty() and os.getenv("DISABLE_DASHBOARD") != "1"
-
-if is_tui:
-    dash_handler = DashboardLogHandler()
-    dash_handler.setFormatter(logging.Formatter("%(message)s"))
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    for h in list(root_logger.handlers):
-        root_logger.removeHandler(h)
-    root_logger.addHandler(dash_handler)
-else:
-    logging.basicConfig(
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        level=logging.INFO,
-    )
+logging.basicConfig(
+    format="[%(asctime)s] [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+    level=logging.INFO,
+)
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
@@ -421,6 +417,13 @@ async def cart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     status_msg = await msg.reply_text("⏳ Đang quét giỏ hàng, chọn tất cả sản phẩm và đọc Giá Cuối Cùng...")
 
+    is_online, latency = await asyncio.to_thread(check_internet)
+    badge = format_net_badge(is_online, latency)
+    if not is_online:
+        await status_msg.edit_text("❌ Bot đang bị mất kết nối Internet trên host. Vui lòng thử lại sau.")
+        print_cli(f"[dim][{datetime.now().strftime('%H:%M:%S')}][/] {badge} [bold red][Telegram /cart] Mất kết nối Internet![/]")
+        return
+
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, lambda: scrape_cart(headless=True))
 
@@ -445,6 +448,7 @@ async def cart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     products = result["products"]
     summary = result.get("summary", {})
     dashboard.update_cart(products, summary)
+    print_cli(f"[dim][{datetime.now().strftime('%H:%M:%S')}][/] {badge} [bold cyan][Telegram /cart][/] Đọc thành công {len(products)} SKU | Tổng: [bold green]{summary.get('Total', '0₫')}[/]")
     messages = format_cart_messages(products, summary)
 
     if messages:
@@ -567,13 +571,12 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def post_init(application: Application) -> None:
-    """Khởi động tác vụ background scheduler và dashboard ngay khi bot chạy"""
+    """Khởi động tác vụ background scheduler khi bot chạy"""
     asyncio.create_task(start_scheduler_loop(application.bot))
-    logger.info("[OK] Background scheduler task đã khởi động.")
-
     dashboard.set_subscribers_count(len(get_subscribers()))
-    if sys.stdout.isatty() and os.getenv("DISABLE_DASHBOARD") != "1":
-        asyncio.create_task(run_dashboard_loop())
+    is_online, latency = await asyncio.to_thread(check_internet)
+    badge = format_net_badge(is_online, latency)
+    print_cli(f"{badge} [bold green]Father Bot Telegram đã kết nối thành công![/] (Subscribers: {len(get_subscribers())})")
 
 
 def main() -> None:
@@ -592,7 +595,9 @@ def main() -> None:
         print("[!] Lỗi: Chưa có TELEGRAM_BOT_TOKEN trong file .env")
         return
 
-    print("[*] Khởi động Father Bot Telegram + Auto Scheduler...")
+    is_online, latency = check_internet()
+    badge = format_net_badge(is_online, latency)
+    print_cli(f"{badge} [*] Khởi động Father Bot Telegram + Auto Scheduler...")
     app = Application.builder().token(token).post_init(post_init).build()
 
     # Handlers cơ bản
