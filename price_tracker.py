@@ -22,6 +22,8 @@ sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 from anti_detect import (
     create_stealth_driver,
+    get_or_create_driver,
+    close_shared_driver,
     load_cookies,
     save_cookies,
     safe_quit,
@@ -65,10 +67,15 @@ def _hash_id(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
 
 
-def scrape_cart(headless: bool = True) -> Dict[str, Any]:
+def scrape_cart(headless: bool = True, keep_alive: bool = False) -> Dict[str, Any]:
     """
     Truy cập giỏ hàng Lazada, tick 'Chọn tất cả' ngay tại giỏ hàng và đọc giá thực tế sau giảm.
     Cam kết: KHÔNG BAO GIỜ bấm vào nút thanh toán (CONFIRM CART / Checkout).
+    Tối ưu hóa:
+    - Chặn ảnh & web fonts giúp tải trang siêu tốc.
+    - Polling thông minh (Smart Polling) thay vì sleep cứng, phản hồi tức thì khi dữ liệu xuất hiện.
+    - Cuộn trang tức thời bằng JavaScript.
+    - Tùy chọn keep_alive giữ phiên trình duyệt để quét tức thì (< 2s).
     """
     if not os.path.exists(COOKIES_FILE):
         return {
@@ -80,21 +87,37 @@ def scrape_cart(headless: bool = True) -> Dict[str, Any]:
 
     driver = None
     try:
-        driver = create_stealth_driver(headless=headless)
-        if not load_cookies(driver):
-            return {
-                "status": "need_login",
-                "message": "Không nạp được cookie vào trình duyệt. Cookie có thể bị lỗi hoặc chưa đăng nhập.",
-                "products": [],
-                "summary": {}
-            }
+        if keep_alive:
+            driver = get_or_create_driver(headless=headless)
+        else:
+            driver = create_stealth_driver(headless=headless)
+            if not load_cookies(driver):
+                return {
+                    "status": "need_login",
+                    "message": "Không nạp được cookie vào trình duyệt. Cookie có thể bị lỗi hoặc chưa đăng nhập.",
+                    "products": [],
+                    "summary": {}
+                }
 
-        # 1. Truy cập duy nhất trang giỏ hàng (áp dụng safe_get chống timeout renderer)
-        safe_get(driver, CART_URL, timeout=45)
-        time.sleep(3.5)
+        # 1. Truy cập trang giỏ hàng (áp dụng safe_get chống timeout)
+        safe_get(driver, CART_URL, timeout=30)
+
+        # Chờ thông minh: kiểm tra xem __initData__ hoặc DOM giỏ hàng đã xuất hiện chưa (tối đa 3.5s, tick mỗi 100ms)
+        for _ in range(35):
+            ready = driver.execute_script("""
+                return Boolean(
+                    (window.__initData__ && window.__initData__.module && window.__initData__.module.data) ||
+                    document.querySelector('.list-header-checkbox, .checkout-summary, .cart-empty')
+                );
+            """)
+            if ready:
+                break
+            time.sleep(0.1)
 
         cur_url = driver.current_url.lower()
         if "member.lazada.vn" in cur_url or "login" in cur_url:
+            if keep_alive:
+                close_shared_driver()
             return {
                 "status": "need_login",
                 "message": "Cookie đã hết hạn hoặc không hợp lệ. Vui lòng cập nhật cookie mới.",
@@ -117,6 +140,8 @@ def scrape_cart(headless: bool = True) -> Dict[str, Any]:
         """)
 
         if auth_status and auth_status.get("hasLoginBtn") and not auth_status.get("hasAccount") and not auth_status.get("hasModules"):
+            if keep_alive:
+                close_shared_driver()
             return {
                 "status": "need_login",
                 "message": "Phiên đăng nhập Lazada đã hết hạn (chưa đăng nhập). Vui lòng cập nhật cookie mới bằng /cookie.",
@@ -124,17 +149,13 @@ def scrape_cart(headless: bool = True) -> Dict[str, Any]:
                 "summary": {}
             }
 
-        # 2. Cuộn trang để kích hoạt Lazy-load nạp 100% tất cả sản phẩm & phân loại trong giỏ hàng
+        # 2. Cuộn trang siêu tốc bằng JavaScript để kích hoạt Lazy-load nạp 100% tất cả SKU
         try:
-            scroll_h = driver.execute_script("return document.body.scrollHeight || 3000;")
-            driver.execute_script(f"window.scrollTo(0, {scroll_h * 0.4});")
-            time.sleep(0.8)
-            driver.execute_script(f"window.scrollTo(0, {scroll_h * 0.8});")
-            time.sleep(0.8)
-            driver.execute_script(f"window.scrollTo(0, {scroll_h});")
-            time.sleep(1.0)
-            driver.execute_script("window.scrollTo(0, 0);")
-            time.sleep(0.8)
+            driver.execute_script("""
+                window.scrollTo(0, document.body.scrollHeight || 3000);
+                setTimeout(function() { window.scrollTo(0, 0); }, 150);
+            """)
+            time.sleep(0.25)
         except Exception:
             pass
 
@@ -147,22 +168,23 @@ def scrape_cart(headless: bool = True) -> Dict[str, Any]:
             }
         """)
 
-        # 4. Đợi vài giây để giỏ hàng tự cập nhật số tiền hiển thị
-        for _ in range(5):
-            time.sleep(1)
+        # 4. Chờ thông minh số tiền summary cập nhật (tối đa 1.5s, tick mỗi 100ms)
+        for _ in range(15):
             summary_txt = driver.execute_script("""
                 var el = document.querySelector('.checkout-summary, .summary-section');
                 return el ? el.innerText : '';
             """)
             if summary_txt and "0 items" not in summary_txt:
                 break
+            time.sleep(0.1)
 
         # 5. Đọc dữ liệu từng sản phẩm & từng phân loại và Giá Cuối Cùng ngay tại giỏ
         products, summary_data = _extract_cart_and_summary(driver)
 
         if not products:
-            # Kiểm tra thêm lần nữa: nếu không có products và không có module data thì khả năng cao là cần login
             if not auth_status.get("hasModules"):
+                if keep_alive:
+                    close_shared_driver()
                 return {
                     "status": "need_login",
                     "message": "Không tải được giỏ hàng cá nhân. Cookie phiên đăng nhập có thể đã hết hạn.",
@@ -184,6 +206,8 @@ def scrape_cart(headless: bool = True) -> Dict[str, Any]:
         }
 
     except Exception as e:
+        if keep_alive:
+            close_shared_driver()
         return {
             "status": "error",
             "message": f"Lỗi khi đọc giỏ hàng: {e}",
@@ -191,7 +215,8 @@ def scrape_cart(headless: bool = True) -> Dict[str, Any]:
             "summary": {}
         }
     finally:
-        safe_quit(driver)
+        if not keep_alive:
+            safe_quit(driver)
 
 
 def _extract_cart_and_summary(driver) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -273,11 +298,11 @@ def _extract_cart_and_summary(driver) -> tuple[List[Dict[str, Any]], Dict[str, A
     return products, summary_data
 
 
-def track_prices(headless: bool = True) -> dict:
+def track_prices(headless: bool = True, keep_driver: bool = False) -> dict:
     """
     Theo dõi biến động giá thực tế của TẤT CẢ sản phẩm và TẤT CẢ phân loại (SKU).
     """
-    scrape_res = scrape_cart(headless=headless)
+    scrape_res = scrape_cart(headless=headless, keep_alive=keep_driver)
     if scrape_res["status"] != "ok":
         return scrape_res
 

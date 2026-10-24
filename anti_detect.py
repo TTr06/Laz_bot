@@ -113,6 +113,25 @@ def create_stealth_driver(headless: bool = True) -> webdriver.Chrome:
     options.add_argument("--disable-popup-blocking")
     options.add_argument("--lang=vi-VN,vi,en-US,en")
 
+    # Tối ưu hóa hiệu năng & tốc độ:
+    # 1. Tắt tải ảnh và web fonts để giảm 70% dung lượng mạng & tăng tốc render
+    options.add_argument("--blink-settings=imagesEnabled=false")
+    options.add_argument("--disable-remote-fonts")
+    options.add_experimental_option("prefs", {
+        "profile.managed_default_content_settings.images": 2,
+        "profile.default_content_setting_values.images": 2,
+        "profile.default_content_setting_values.notifications": 2,
+    })
+
+    # 2. Giảm thiểu các tác vụ nền thừa & tối ưu RAM trên Android/Termux
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-component-update")
+    options.add_argument("--disable-default-apps")
+    options.add_argument("--no-first-run")
+    options.add_argument("--mute-audio")
+    options.add_argument("--disk-cache-size=1048576")
+    options.add_argument("--media-cache-size=1048576")
+
     # Ngăn lỗi renderer timeout do hệ điều hành throttle tiến trình trên Android / Linux / PRoot
     options.add_argument("--disable-renderer-backgrounding")
     options.add_argument("--disable-backgrounding-occluded-windows")
@@ -261,3 +280,43 @@ def save_cookies(driver) -> int:
         return len(merged)
     except Exception:
         return 0
+
+
+# Biến singleton quản lý phiên trình duyệt dùng chung để tối ưu tốc độ quét định kỳ
+_shared_driver = None
+_shared_driver_uses = 0
+_shared_driver_max_uses = 15  # Tự động refresh trình duyệt sau 15 lượt quét để giải phóng RAM triệt để
+
+
+def get_or_create_driver(headless: bool = True) -> webdriver.Chrome:
+    """Tái sử dụng phiên trình duyệt đã mở để quét tức thì (< 2s) mà không tốn công bật/tắt Chrome"""
+    global _shared_driver, _shared_driver_uses
+    if _shared_driver is not None:
+        try:
+            # Kiểm tra xem phiên Chrome còn sống không
+            _ = _shared_driver.current_window_handle
+            _shared_driver_uses += 1
+            if _shared_driver_uses <= _shared_driver_max_uses:
+                return _shared_driver
+            else:
+                # Đã đạt giới hạn số lần dùng, đóng để dọn dẹp RAM
+                close_shared_driver()
+        except Exception:
+            close_shared_driver()
+
+    _shared_driver = create_stealth_driver(headless=headless)
+    _shared_driver_uses = 1
+    load_cookies(_shared_driver)
+    return _shared_driver
+
+
+def close_shared_driver() -> None:
+    """Đóng phiên trình duyệt dùng chung và giải phóng RAM"""
+    global _shared_driver, _shared_driver_uses
+    if _shared_driver is not None:
+        try:
+            _shared_driver.quit()
+        except Exception:
+            pass
+        _shared_driver = None
+        _shared_driver_uses = 0

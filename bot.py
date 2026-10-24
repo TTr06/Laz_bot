@@ -30,6 +30,7 @@ from telegram.ext import (
 )
 
 from cart_adder import extract_lazada_url, fetch_product_details, add_sku_to_cart
+from anti_detect import close_shared_driver
 
 from cookie_manager import (
     parse_cookie_input,
@@ -160,6 +161,7 @@ async def cookie_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     count = save_cookies_list(cookies)
+    close_shared_driver()
     dashboard.set_cookie_status(True)
     await msg.reply_html(
         f"✅ <b>Đã nạp thành công {count} cookies!</b>\n"
@@ -189,6 +191,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         count = save_cookies_list(cookies)
+        close_shared_driver()
         dashboard.set_cookie_status(True)
         await status_msg.edit_text(
             f"✅ <b>Đã nạp thành công {count} cookies từ file {file_name}!</b>\n"
@@ -377,6 +380,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         cookies = parse_cookie_input(text)
         if cookies and len(cookies) > 0:
             count = save_cookies_list(cookies)
+            close_shared_driver()
             dashboard.set_cookie_status(True)
             await msg.reply_html(
                 f"✅ <b>Đã tự động nhận diện và nạp {count} cookies!</b>\n"

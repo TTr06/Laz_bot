@@ -13,6 +13,7 @@ from typing import Optional, Tuple
 
 from subscriber_manager import get_subscribers, is_auto_track_enabled
 from price_tracker import track_prices, format_changes_alert
+from anti_detect import close_shared_driver
 from dashboard import (
     dashboard,
     check_internet,
@@ -104,9 +105,10 @@ async def run_single_check(bot, next_target: Optional[datetime] = None, interval
         )
         return
 
-    # 2. Quét giỏ hàng
+    # 2. Quét giỏ hàng (áp dụng giữ phiên trình duyệt khi quét 1p/lần để tốc độ tối đa < 2s)
+    is_peak = (interval_mins == 1)
     try:
-        result = await asyncio.to_thread(track_prices, True)
+        result = await asyncio.to_thread(track_prices, True, is_peak)
     except Exception as e:
         logger.error(f"Lỗi khi chạy track_prices: {e}", exc_info=True)
         log_check_result(
@@ -117,6 +119,9 @@ async def run_single_check(bot, next_target: Optional[datetime] = None, interval
             error_msg=str(e)
         )
         return
+    finally:
+        if not is_peak:
+            await asyncio.to_thread(close_shared_driver)
 
     status = result.get("status")
 

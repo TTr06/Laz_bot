@@ -61,8 +61,17 @@ def fetch_product_details(url: str, headless: bool = True) -> Dict[str, Any]:
     try:
         driver = create_stealth_driver(headless=headless)
         load_cookies(driver)
-        safe_get(driver, url, timeout=45)
-        time.sleep(3.5)
+        safe_get(driver, url, timeout=30)
+        # Chờ thông minh: kiểm tra phần tử sản phẩm xuất hiện thay vì ngủ cứng
+        for _ in range(25):
+            ready = driver.execute_script("""
+                return Boolean(
+                    document.querySelector('.pdp-mod-product-badge-title, h1, .pdp-product-title, .pdp-price')
+                );
+            """)
+            if ready:
+                break
+            time.sleep(0.12)
 
         # Trích xuất dữ liệu chi tiết
         result = driver.execute_script('''
@@ -189,8 +198,17 @@ def add_sku_to_cart(url: str, sku_name: Optional[str] = None, headless: bool = T
                 "message": "Không nạp được cookie đăng nhập. Vui lòng nạp lại cookie Lazada qua lệnh /cookie."
             }
 
-        safe_get(driver, url, timeout=45)
-        time.sleep(3.5)
+        safe_get(driver, url, timeout=30)
+        # Chờ thông minh: kiểm tra phần tử sản phẩm xuất hiện thay vì ngủ cứng
+        for _ in range(25):
+            ready = driver.execute_script("""
+                return Boolean(
+                    document.querySelector('.pdp-mod-product-badge-title, h1, .pdp-product-title, .pdp-price')
+                );
+            """)
+            if ready:
+                break
+            time.sleep(0.12)
 
         # 1. Nếu có phân loại, click chọn phân loại đó
         if sku_name:
@@ -207,7 +225,7 @@ def add_sku_to_cart(url: str, sku_name: Optional[str] = None, headless: bool = T
                 }
                 return false;
             ''', sku_name)
-            time.sleep(1.2)
+            time.sleep(0.3)
 
         # 2. Click nút 'Add to Cart' / 'Thêm vào giỏ hàng'
         add_result = driver.execute_script('''
@@ -229,18 +247,19 @@ def add_sku_to_cart(url: str, sku_name: Optional[str] = None, headless: bool = T
                 "message": "Không tìm thấy nút 'Thêm vào giỏ hàng' (sản phẩm có thể đã hết hàng)."
             }
 
-        # 3. Đợi hộp thoại xác nhận thành công xuất hiện
-        time.sleep(2.0)
-        success_check = driver.execute_script('''
-            var bodyText = document.body ? document.body.innerText : '';
-            var hasSuccess = bodyText.indexOf('Added to cart successfully') !== -1 ||
-                             bodyText.indexOf('Thêm vào giỏ hàng thành công') !== -1 ||
-                             bodyText.indexOf('Đã thêm vào giỏ hàng') !== -1;
-            var dialog = document.querySelector('.next-dialog, .cart-success-dialog, .pdp-dialog');
-            return {
-                success: hasSuccess || !!dialog
-            };
-        ''')
+        # 3. Chờ thông minh hộp thoại xác nhận thành công xuất hiện
+        for _ in range(15):
+            success_check = driver.execute_script('''
+                var bodyText = document.body ? document.body.innerText : '';
+                var hasSuccess = bodyText.indexOf('Added to cart successfully') !== -1 ||
+                                 bodyText.indexOf('Thêm vào giỏ hàng thành công') !== -1 ||
+                                 bodyText.indexOf('Đã thêm vào giỏ hàng') !== -1;
+                var dialog = document.querySelector('.next-dialog, .cart-success-dialog, .pdp-dialog');
+                return hasSuccess || !!dialog;
+            ''')
+            if success_check:
+                break
+            time.sleep(0.12)
 
         save_cookies(driver)
 
