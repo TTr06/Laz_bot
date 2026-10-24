@@ -42,9 +42,19 @@ from price_tracker import (
     scrape_cart,
     track_prices,
     get_price_summary,
+    load_price_history,
     format_cart_message,
     format_cart_messages,
     format_changes_alert,
+)
+from target_price_manager import (
+    parse_user_price,
+    set_target_price,
+    remove_target_price,
+    clear_all_target_prices,
+    get_all_target_prices,
+    get_target_price,
+    find_product_by_query,
 )
 from subscriber_manager import (
     add_subscriber,
@@ -92,6 +102,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"• Tự động tick <b>Chọn tất cả</b> để đọc giá sau Voucher & Khuyến mãi\n"
         f"• Theo dõi độc lập <b>tất cả phân loại (SKU)</b> của từng sản phẩm\n"
         f"• Tần suất quét: <b>1 phút/lần</b> (15p đầu giờ) & <b>5 phút/lần</b> (đến hết giờ)\n"
+        f"• <b>Đặt giá mục tiêu:</b> Cài mức giá mong muốn (<code>/setprice</code>), bot CHỈ báo khi giá giảm xuống ≤ mức này!\n"
         f"• Tự động gửi cảnh báo kèm <b>thông tin phân loại & link mua hàng</b>\n"
         f"• <b>Thêm vào giỏ hàng bằng link</b>: Dán link sản phẩm là có nút chọn phân loại ngay\n"
         f"• An toàn tuyệt đối: Không bao giờ bấm vào trang thanh toán\n\n"
@@ -116,6 +127,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• <code>/track</code> : Kiểm tra biến động giá ngay lập tức\n"
         "• <code>/prices</code> : Xem danh sách giá các mặt hàng đã lưu\n"
         "• <code>/add &lt;link&gt;</code> : Thêm sản phẩm vào giỏ (chọn phân loại qua nút bấm)\n\n"
+        "🎯 <b>Mức Giá Mục Tiêu (Target Price):</b>\n"
+        "• <code>/setprice &lt;stt&gt; &lt;giá&gt;</code> : Chỉ báo động khi giá giảm xuống ≤ mức này (VD: <code>/setprice 1 100k</code>)\n"
+        "• <code>/delprice &lt;stt&gt;</code> : Xóa mức giá mục tiêu (sẽ báo mọi biến động)\n"
+        "• <code>/targets</code> : Xem danh sách sản phẩm đang cài giá mục tiêu\n\n"
         "⏰ <b>Lịch Trình Tự Động:</b>\n"
         "• <code>/schedule</code> (hoặc <code>/auto</code>) : Xem tình trạng lịch quét tự động\n"
         "• <code>/check_now</code> : Kích hoạt 1 lượt quét giỏ hàng ngay\n"
@@ -507,6 +522,174 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await status_msg.edit_text(full_text, parse_mode="HTML")
 
 
+async def setprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Cài đặt mức giá mục tiêu: chỉ gửi thông báo khi giá <= mức này"""
+    auto_register_user(update)
+    msg = update.effective_message
+    if not msg:
+        return
+
+    args = context.args or []
+    if len(args) < 2:
+        history = load_price_history()
+        prods = history.get("products", {})
+
+        guide_lines = [
+            "🎯 <b>HƯỚNG DẪN ĐẶT MỨC GIÁ MỤC TIÊU:</b>\n",
+            "Bot sẽ <b>CHỈ gửi thông báo</b> khi giá sản phẩm giảm xuống <b>thấp hơn hoặc bằng (≤)</b> mức giá bạn đặt.",
+            "<i>(Các sản phẩm không cài giá mục tiêu vẫn thông báo biến động như bình thường)</i>\n",
+            "👉 <b>Cú pháp:</b> <code>/setprice &lt;STT hoặc Tên&gt; &lt;Mức giá&gt;</code>",
+            "Ví dụ:",
+            "• <code>/setprice 1 100k</code> (chỉ báo khi SP #1 giảm ≤ 100.000₫)",
+            "• <code>/setprice 2 45.000</code>",
+            "• <code>/setprice ugreen 50k</code> (tìm theo từ khóa)\n",
+        ]
+
+        if prods:
+            guide_lines.append("📋 <b>Danh sách sản phẩm trong giỏ hàng:</b>")
+            for idx, (pid, p) in enumerate(prods.items(), 1):
+                p_name = p.get("name", "Sản phẩm")[:40]
+                sku = p.get("sku", "")
+                p_sku = f" [{sku[:20]}]" if sku else ""
+                cur_p = p.get("current_price")
+                cur_str = f"{cur_p:,.0f}₫" if cur_p else "N/A"
+
+                target = get_target_price(pid)
+                target_str = f" ➔ 🎯 Mục tiêu: <b>≤ {target:,.0f}₫</b>" if target else ""
+                guide_lines.append(f"<b>{idx}.</b> {p_name}{p_sku} - <code>{cur_str}</code>{target_str}")
+            guide_lines.append("\n👉 Gõ <code>/setprice &lt;STT&gt; &lt;giá&gt;</code> để cài đặt ngay.")
+        else:
+            guide_lines.append("ℹ️ <i>Chưa có dữ liệu giỏ hàng. Hãy gửi /cart trước để bot quét sản phẩm.</i>")
+
+        await msg.reply_html("\n".join(guide_lines))
+        return
+
+    price_str = args[-1]
+    query = " ".join(args[:-1]).strip()
+    target_val = parse_user_price(price_str)
+
+    if not target_val or target_val <= 0:
+        await msg.reply_html(
+            "❌ <b>Mức giá không hợp lệ!</b>\n"
+            "Ví dụ các định dạng được hỗ trợ: <code>100k</code>, <code>50.000</code>, <code>150000</code>, <code>1.5tr</code>"
+        )
+        return
+
+    matched = find_product_by_query(query)
+    if not matched:
+        await msg.reply_html(
+            f"❌ Không tìm thấy sản phẩm nào khớp với: <code>{query}</code>\n"
+            f"👉 Hãy gõ <code>/cart</code> hoặc <code>/setprice</code> để xem danh sách STT."
+        )
+        return
+
+    pid, p_data, idx = matched
+    name = p_data.get("name", "Sản phẩm")
+    sku = p_data.get("sku", "")
+    curr_p = p_data.get("current_price") or 0
+
+    set_target_price(pid, name, sku, target_val, p_data.get("url", ""))
+
+    sku_text = f"🏷️ <i>Phân loại: <b>{sku}</b></i>\n" if sku else ""
+    await msg.reply_html(
+        f"🎯 <b>ĐÃ ĐẶT MỨC GIÁ MỤC TIÊU THÀNH CÔNG!</b>\n\n"
+        f"📦 <b>Sản phẩm #{idx}:</b> {name[:60]}\n"
+        f"{sku_text}"
+        f"💰 Giá hiện tại: <code>{curr_p:,.0f}₫</code>\n"
+        f"🎯 Giá mục tiêu: <b>≤ {target_val:,.0f}₫</b>\n\n"
+        f"🔔 <b>Quy tắc thông báo:</b>\n"
+        f"• Bot sẽ <b>CHỈ gửi thông báo</b> khi giá sản phẩm này giảm xuống <b>≤ {target_val:,.0f}₫</b>.\n"
+        f"• Nếu giá thay đổi nhưng vẫn > {target_val:,.0f}₫, bot sẽ bỏ qua thông báo.\n"
+        f"• Các sản phẩm khác trong giỏ vẫn thông báo như bình thường.\n\n"
+        f"👉 Gõ <code>/targets</code> để xem danh sách đang theo dõi."
+    )
+
+
+async def delprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Xóa mức giá mục tiêu: quay lại thông báo biến động bình thường"""
+    auto_register_user(update)
+    msg = update.effective_message
+    if not msg:
+        return
+
+    args = context.args or []
+    if not args:
+        await msg.reply_html(
+            "👉 <b>Cú pháp xóa giá mục tiêu:</b>\n"
+            "• <code>/delprice &lt;STT hoặc tên&gt;</code> (VD: <code>/delprice 1</code>)\n"
+            "• <code>/delprice all</code> (Xóa toàn bộ mức giá mục tiêu đã đặt)"
+        )
+        return
+
+    query = " ".join(args).strip()
+    if query.lower() in ("all", "tat ca", "tất cả"):
+        count = clear_all_target_prices()
+        await msg.reply_html(f"✅ <b>Đã xóa toàn bộ {count} mức giá mục tiêu!</b>\nTừ giờ bot sẽ thông báo mọi biến động giá cho tất cả sản phẩm.")
+        return
+
+    matched = find_product_by_query(query)
+    if not matched:
+        await msg.reply_html(f"❌ Không tìm thấy sản phẩm nào khớp với: <code>{query}</code>")
+        return
+
+    pid, p_data, idx = matched
+    if remove_target_price(pid):
+        name = p_data.get("name", "Sản phẩm")[:60]
+        await msg.reply_html(
+            f"✅ <b>Đã xóa mức giá mục tiêu cho SP #{idx}:</b> {name}\n\n"
+            f"🔔 Sản phẩm này sẽ nhận thông báo mọi biến động giá như bình thường."
+        )
+    else:
+        await msg.reply_text("ℹ️ Sản phẩm này trước đó chưa cài đặt mức giá mục tiêu.")
+
+
+async def targets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Xem danh sách các sản phẩm đang được cài đặt mức giá mục tiêu"""
+    auto_register_user(update)
+    msg = update.effective_message
+    if not msg:
+        return
+
+    targets = get_all_target_prices()
+    if not targets:
+        await msg.reply_html(
+            "ℹ️ <b>Hiện chưa có sản phẩm nào được cài đặt mức giá mục tiêu.</b>\n\n"
+            "Tất cả sản phẩm trong giỏ hàng đang được theo dõi và gửi thông báo khi có bất kỳ biến động nào.\n\n"
+            "👉 Để cài mức giá mong muốn: <code>/setprice &lt;STT&gt; &lt;giá&gt;</code> (VD: <code>/setprice 1 100k</code>)"
+        )
+        return
+
+    history = load_price_history()
+    hist_prods = history.get("products", {})
+
+    lines = ["🎯 <b>DANH SÁCH GIÁ MỤC TIÊU ĐANG THEO DÕI:</b>\n"]
+    for idx, (pid, data) in enumerate(targets.items(), 1):
+        name = data.get("name", "Sản phẩm")[:55]
+        sku = data.get("sku", "")
+        sku_str = f"   🏷️ <i>Phân loại: {sku}</i>\n" if sku else ""
+        target_p = data.get("target_price", 0)
+
+        hist_p = hist_prods.get(pid, {})
+        curr_p = hist_p.get("current_price")
+        curr_str = f"{curr_p:,.0f}₫" if curr_p else "N/A"
+
+        if curr_p and curr_p <= target_p:
+            status_tag = "🎉 <b>ĐÃ ĐẠT!</b>"
+        else:
+            diff = curr_p - target_p if curr_p else 0
+            status_tag = f"⏳ <i>Cần giảm thêm {diff:,.0f}₫</i>" if diff > 0 else "⏳ <i>Đang chờ...</i>"
+
+        lines.append(
+            f"<b>{idx}. {name}</b>\n"
+            f"{sku_str}"
+            f"   🎯 Mục tiêu: <b>≤ {target_p:,.0f}₫</b>\n"
+            f"   💰 Hiện tại: <code>{curr_str}</code> ({status_tag})\n"
+        )
+
+    lines.append("👉 Xóa mục tiêu: <code>/delprice &lt;STT&gt;</code> hoặc <code>/delprice all</code>")
+    await msg.reply_html("\n".join(lines))
+
+
 async def prices_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     auto_register_user(update)
     msg = update.effective_message
@@ -614,6 +797,14 @@ def main() -> None:
     app.add_handler(CommandHandler("track", track_command))
     app.add_handler(CommandHandler("prices", prices_command))
     app.add_handler(CommandHandler("add", add_command))
+
+    # Handlers cài đặt giá mục tiêu
+    app.add_handler(CommandHandler("setprice", setprice_command))
+    app.add_handler(CommandHandler("gia", setprice_command))
+    app.add_handler(CommandHandler("delprice", delprice_command))
+    app.add_handler(CommandHandler("unsetprice", delprice_command))
+    app.add_handler(CommandHandler("target", targets_command))
+    app.add_handler(CommandHandler("targets", targets_command))
 
     # Handler chọn phân loại và thêm vào giỏ hàng qua nút bấm
     app.add_handler(CallbackQueryHandler(handle_add_cart_callback, pattern=r"^addcart:"))

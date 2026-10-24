@@ -10,6 +10,7 @@ cookie_input.json
 # User dynamic data & state
 price_history.json
 subscribers.json
+target_prices.json
 
 # Browser profile & cache
 chrome_profile/

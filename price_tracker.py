@@ -30,6 +30,7 @@ from anti_detect import (
     safe_get,
     COOKIES_FILE,
 )
+from target_price_manager import should_notify_price_change, get_target_price
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PRICE_HISTORY_FILE = os.path.join(BASE_DIR, "price_history.json")
@@ -326,21 +327,25 @@ def track_prices(headless: bool = True, keep_driver: bool = False) -> dict:
             old_price = prod_entry.get("current_price")
             old_valid = prod_entry.get("valid", True)
 
-            # 1. Phát hiện thay đổi giá
+            # 1. Phát hiện thay đổi giá (kiểm tra điều kiện giá mục tiêu nếu có)
             if old_price and curr_price and old_price != curr_price:
                 diff = curr_price - old_price
                 pct = (diff / old_price) * 100
-                changes.append({
-                    "type": "PRICE_CHANGE",
-                    "name": name,
-                    "sku": sku,
-                    "old_price": old_price,
-                    "new_price": curr_price,
-                    "diff": diff,
-                    "diff_pct": round(pct, 2),
-                    "direction": "GIẢM" if diff < 0 else "TĂNG",
-                    "url": p.get("url", "")
-                })
+                should_notify, target_price = should_notify_price_change(pid, old_price, curr_price)
+                if should_notify:
+                    changes.append({
+                        "type": "PRICE_CHANGE",
+                        "name": name,
+                        "sku": sku,
+                        "old_price": old_price,
+                        "new_price": curr_price,
+                        "diff": diff,
+                        "diff_pct": round(pct, 2),
+                        "direction": "GIẢM" if diff < 0 else "TĂNG",
+                        "url": p.get("url", ""),
+                        "target_price": target_price,
+                        "reached_target": bool(target_price and curr_price <= target_price)
+                    })
                 prod_entry["price_history"].append({"price": curr_price, "timestamp": now})
                 prod_entry["current_price"] = curr_price
 
@@ -446,17 +451,26 @@ def format_cart_messages(products: List[dict], summary: dict) -> List[str]:
         sku = f"\n   🏷️ <i>Phân loại: {sku_val}</i>" if sku_val else ""
         price = p.get("price")
 
+        pid = _hash_id(f"{name} || {sku_val}")
+        target_p = get_target_price(pid)
+        target_info = ""
+        if target_p:
+            if price and price <= target_p:
+                target_info = f"\n   🎯 <i>Mục tiêu: ≤ {target_p:,.0f}₫ (ĐÃ ĐẠT! 🎉)</i>"
+            else:
+                target_info = f"\n   🎯 <i>Mục tiêu: ≤ {target_p:,.0f}₫ (Đang chờ)</i>"
+
         if p.get("has_discount") and p.get("base_price"):
             base_p = p["base_price"]
             diff = p.get("discount_amount", 0)
             item_block = (
-                f"<b>{i}. {name_display}</b>{sku}\n"
+                f"<b>{i}. {name_display}</b>{sku}{target_info}\n"
                 f"   💰 Giá cuối: <b>{price:,.0f}₫</b> <s>{base_p:,.0f}₫</s> <i>(-{diff:,.0f}₫)</i>"
             )
         else:
             price_str = f"{price:,.0f}₫" if price else "N/A"
             item_block = (
-                f"<b>{i}. {name_display}</b>{sku}\n"
+                f"<b>{i}. {name_display}</b>{sku}{target_info}\n"
                 f"   💰 Giá cuối: <b>{price_str}</b>"
             )
 
@@ -541,9 +555,14 @@ def format_changes_alert(changes: list, total_change: Optional[dict] = None) -> 
             old_p = f"{c['old_price']:,.0f}₫"
             new_p = f"{c['new_price']:,.0f}₫"
             diff_str = f"{abs(c['diff']):,.0f}₫"
+            target_badge = ""
+            if c.get("reached_target") and c.get("target_price"):
+                target_badge = f"   🎯 <b>ĐÃ ĐẠT GIÁ MỤC TIÊU: ≤ {c['target_price']:,.0f}₫!</b> 🎉\n"
+
             lines.append(
                 f"{icon} <b>{name}</b>\n"
                 f"{sku_str}"
+                f"{target_badge}"
                 f"   💰 {old_p} ➔ <b>{new_p}</b>\n"
                 f"   ⚡ Biến động: <b>{c['direction']} {diff_str}</b> ({c['diff_pct']}%)\n"
                 f"{link_str}"
