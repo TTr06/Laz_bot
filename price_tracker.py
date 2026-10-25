@@ -68,6 +68,32 @@ def _hash_id(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _extract_data_bytes(driver) -> int:
+    """Đo tổng dung lượng dữ liệu mạng (bytes) của lượt tải trang qua Performance Resource Timing API"""
+    if not driver:
+        return 0
+    try:
+        val = driver.execute_script("""
+            var total = 0;
+            try {
+                var nav = window.performance.getEntriesByType('navigation');
+                if (nav && nav.length > 0) {
+                    total += (nav[0].transferSize || nav[0].encodedBodySize || nav[0].decodedBodySize || 0);
+                }
+                var res = window.performance.getEntriesByType('resource');
+                if (res) {
+                    for (var i = 0; i < res.length; i++) {
+                        total += (res[i].transferSize || res[i].encodedBodySize || res[i].decodedBodySize || 0);
+                    }
+                }
+            } catch(e) {}
+            return Math.round(total);
+        """)
+        return int(val) if val else 0
+    except Exception:
+        return 0
+
+
 def scrape_cart(headless: bool = True, keep_alive: bool = False) -> Dict[str, Any]:
     """
     Truy cập giỏ hàng Lazada, tick 'Chọn tất cả' ngay tại giỏ hàng và đọc giá thực tế sau giảm.
@@ -77,13 +103,17 @@ def scrape_cart(headless: bool = True, keep_alive: bool = False) -> Dict[str, An
     - Polling thông minh (Smart Polling) thay vì sleep cứng, phản hồi tức thì khi dữ liệu xuất hiện.
     - Cuộn trang tức thời bằng JavaScript.
     - Tùy chọn keep_alive giữ phiên trình duyệt để quét tức thì (< 2s).
+    - Đo lường thời gian quét (giây) và tổng dữ liệu mạng tiêu thụ (bytes).
     """
+    t_start = time.perf_counter()
     if not os.path.exists(COOKIES_FILE):
         return {
             "status": "need_login",
             "message": "Chưa có cookie. Hãy nạp cookie Lazada qua file cookie.json hoặc lệnh /cookie",
             "products": [],
-            "summary": {}
+            "summary": {},
+            "duration": 0.0,
+            "data_bytes": 0
         }
 
     driver = None
@@ -97,7 +127,9 @@ def scrape_cart(headless: bool = True, keep_alive: bool = False) -> Dict[str, An
                     "status": "need_login",
                     "message": "Không nạp được cookie vào trình duyệt. Cookie có thể bị lỗi hoặc chưa đăng nhập.",
                     "products": [],
-                    "summary": {}
+                    "summary": {},
+                    "duration": round(time.perf_counter() - t_start, 2),
+                    "data_bytes": 0
                 }
 
         # 1. Truy cập trang giỏ hàng (áp dụng safe_get chống timeout)
@@ -117,13 +149,17 @@ def scrape_cart(headless: bool = True, keep_alive: bool = False) -> Dict[str, An
 
         cur_url = driver.current_url.lower()
         if "member.lazada.vn" in cur_url or "login" in cur_url:
+            data_bytes = _extract_data_bytes(driver)
+            duration = round(time.perf_counter() - t_start, 2)
             if keep_alive:
                 close_shared_driver()
             return {
                 "status": "need_login",
                 "message": "Cookie đã hết hạn hoặc không hợp lệ. Vui lòng cập nhật cookie mới.",
                 "products": [],
-                "summary": {}
+                "summary": {},
+                "duration": duration,
+                "data_bytes": data_bytes
             }
 
         # Kiểm tra xem có đang ở trạng thái phiên khách (chưa đăng nhập / cookie hết hạn) không
@@ -141,13 +177,17 @@ def scrape_cart(headless: bool = True, keep_alive: bool = False) -> Dict[str, An
         """)
 
         if auth_status and auth_status.get("hasLoginBtn") and not auth_status.get("hasAccount") and not auth_status.get("hasModules"):
+            data_bytes = _extract_data_bytes(driver)
+            duration = round(time.perf_counter() - t_start, 2)
             if keep_alive:
                 close_shared_driver()
             return {
                 "status": "need_login",
                 "message": "Phiên đăng nhập Lazada đã hết hạn (chưa đăng nhập). Vui lòng cập nhật cookie mới bằng /cookie.",
                 "products": [],
-                "summary": {}
+                "summary": {},
+                "duration": duration,
+                "data_bytes": data_bytes
             }
 
         # 2. Cuộn trang siêu tốc bằng JavaScript để kích hoạt Lazy-load nạp 100% tất cả SKU
@@ -182,6 +222,9 @@ def scrape_cart(headless: bool = True, keep_alive: bool = False) -> Dict[str, An
         # 5. Đọc dữ liệu từng sản phẩm & từng phân loại và Giá Cuối Cùng ngay tại giỏ
         products, summary_data = _extract_cart_and_summary(driver)
 
+        data_bytes = _extract_data_bytes(driver)
+        duration = round(time.perf_counter() - t_start, 2)
+
         if not products:
             if not auth_status.get("hasModules"):
                 if keep_alive:
@@ -190,30 +233,40 @@ def scrape_cart(headless: bool = True, keep_alive: bool = False) -> Dict[str, An
                     "status": "need_login",
                     "message": "Không tải được giỏ hàng cá nhân. Cookie phiên đăng nhập có thể đã hết hạn.",
                     "products": [],
-                    "summary": {}
+                    "summary": {},
+                    "duration": duration,
+                    "data_bytes": data_bytes
                 }
             return {
                 "status": "empty",
                 "message": "Giỏ hàng hiện đang trống.",
                 "products": [],
-                "summary": {}
+                "summary": {},
+                "duration": duration,
+                "data_bytes": data_bytes
             }
 
         return {
             "status": "ok",
             "message": f"Đã chọn tất cả và đọc giá {len(products)} phân loại sản phẩm trong giỏ hàng.",
             "products": products,
-            "summary": summary_data
+            "summary": summary_data,
+            "duration": duration,
+            "data_bytes": data_bytes
         }
 
     except Exception as e:
+        duration = round(time.perf_counter() - t_start, 2)
+        data_bytes = _extract_data_bytes(driver) if driver else 0
         if keep_alive:
             close_shared_driver()
         return {
             "status": "error",
             "message": f"Lỗi khi đọc giỏ hàng: {e}",
             "products": [],
-            "summary": {}
+            "summary": {},
+            "duration": duration,
+            "data_bytes": data_bytes
         }
     finally:
         if not keep_alive:
@@ -406,7 +459,9 @@ def track_prices(headless: bool = True, keep_driver: bool = False) -> dict:
         "summary": summary,
         "changes": changes,
         "total_change": total_change,
-        "timestamp": now
+        "timestamp": now,
+        "duration": scrape_res.get("duration", 0.0),
+        "data_bytes": scrape_res.get("data_bytes", 0)
     }
 
 

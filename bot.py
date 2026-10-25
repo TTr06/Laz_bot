@@ -68,8 +68,7 @@ from subscriber_manager import (
 from scheduler import start_scheduler_loop, get_status_info, run_single_check
 from dashboard import (
     dashboard,
-    check_internet,
-    format_net_badge,
+    format_bytes,
     print_cli,
     log_check_result,
 )
@@ -438,13 +437,6 @@ async def cart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     status_msg = await msg.reply_text("⏳ Đang quét giỏ hàng, chọn tất cả sản phẩm và đọc Giá Cuối Cùng...")
 
-    is_online, latency = await asyncio.to_thread(check_internet)
-    badge = format_net_badge(is_online, latency)
-    if not is_online:
-        await status_msg.edit_text("❌ Bot đang bị mất kết nối Internet trên host. Vui lòng thử lại sau.")
-        print_cli(f"[dim][{datetime.now().strftime('%H:%M:%S')}][/] {badge} [bold red][Telegram /cart] Mất kết nối Internet![/]")
-        return
-
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, lambda: scrape_cart(headless=True))
 
@@ -469,7 +461,17 @@ async def cart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     products = result["products"]
     summary = result.get("summary", {})
     dashboard.update_cart(products, summary)
-    print_cli(f"[dim][{datetime.now().strftime('%H:%M:%S')}][/] {badge} [bold cyan][Telegram /cart][/] Đọc thành công {len(products)} SKU | Tổng: [bold green]{summary.get('Total', '0₫')}[/]")
+
+    dur = result.get("duration", 0.0)
+    bytes_cnt = result.get("data_bytes", 0)
+    perf_parts = []
+    if dur > 0:
+        perf_parts.append(f"⏱️ {dur:.1f}s")
+    if bytes_cnt > 0:
+        perf_parts.append(f"📶 {format_bytes(bytes_cnt)}")
+    perf_str = f" | {' | '.join(perf_parts)}" if perf_parts else ""
+
+    print_cli(f"[dim][{datetime.now().strftime('%H:%M:%S')}][/] [bold cyan][Telegram /cart][/] Đọc thành công {len(products)} SKU | Tổng: [bold green]{summary.get('Total', '0₫')}[/]{perf_str}")
     messages = format_cart_messages(products, summary)
 
     if messages:
@@ -763,9 +765,7 @@ async def post_init(application: Application) -> None:
     """Khởi động tác vụ background scheduler khi bot chạy"""
     asyncio.create_task(start_scheduler_loop(application.bot))
     dashboard.set_subscribers_count(len(get_subscribers()))
-    is_online, latency = await asyncio.to_thread(check_internet)
-    badge = format_net_badge(is_online, latency)
-    print_cli(f"{badge} [bold green]Father Bot Telegram đã kết nối thành công![/] (Subscribers: {len(get_subscribers())})")
+    print_cli(f"[bold green]Father Bot Telegram đã kết nối thành công![/] (Subscribers: {len(get_subscribers())})")
 
 
 def main() -> None:
@@ -784,9 +784,7 @@ def main() -> None:
         print("[!] Lỗi: Chưa có TELEGRAM_BOT_TOKEN trong file .env")
         return
 
-    is_online, latency = check_internet()
-    badge = format_net_badge(is_online, latency)
-    print_cli(f"{badge} [*] Khởi động Father Bot Telegram + Auto Scheduler...")
+    print_cli("[*] Khởi động Father Bot Telegram + Auto Scheduler...")
     app = Application.builder().token(token).post_init(post_init).build()
 
     # Handlers cơ bản

@@ -88,24 +88,13 @@ async def broadcast_message(bot, text: str) -> int:
 
 
 async def run_single_check(bot, next_target: Optional[datetime] = None, interval_mins: int = 1) -> None:
-    """Thực hiện một lần quét giỏ hàng và in đúng 1 dòng log trạng thái kèm Internet"""
+    """Thực hiện một lần quét giỏ hàng và in đúng 1 dòng log hiệu năng (thời gian, dung lượng mạng)"""
     now = datetime.now()
     scheduler_state["last_check_time"] = now.strftime("%H:%M:%S %d/%m/%Y")
     dashboard.increment_checks()
     dashboard.set_subscribers_count(len(get_subscribers()))
 
-    # 1. Đo kiểm tra kết nối Internet
-    is_online, latency = await asyncio.to_thread(check_internet)
-    if not is_online:
-        log_check_result(
-            check_num=dashboard.total_checks,
-            status="offline",
-            is_online=False,
-            latency=latency
-        )
-        return
-
-    # 2. Quét giỏ hàng (áp dụng giữ phiên trình duyệt khi quét 1p/lần để tốc độ tối đa < 2s)
+    # Quét giỏ hàng (áp dụng giữ phiên trình duyệt khi quét 1p/lần để tốc độ tối đa < 2s)
     is_peak = (interval_mins == 1)
     try:
         result = await asyncio.to_thread(track_prices, True, is_peak)
@@ -114,8 +103,6 @@ async def run_single_check(bot, next_target: Optional[datetime] = None, interval
         log_check_result(
             check_num=dashboard.total_checks,
             status="error",
-            is_online=True,
-            latency=latency,
             error_msg=str(e)
         )
         return
@@ -124,6 +111,8 @@ async def run_single_check(bot, next_target: Optional[datetime] = None, interval
             await asyncio.to_thread(close_shared_driver)
 
     status = result.get("status")
+    duration = result.get("duration", 0.0)
+    data_bytes = result.get("data_bytes", 0)
 
     # Xử lý trường hợp Cookie hết hạn
     if status == "need_login":
@@ -131,8 +120,8 @@ async def run_single_check(bot, next_target: Optional[datetime] = None, interval
         log_check_result(
             check_num=dashboard.total_checks,
             status="need_login",
-            is_online=True,
-            latency=latency
+            duration=duration,
+            data_bytes=data_bytes
         )
         if not scheduler_state["cookie_alert_sent"]:
             alert_text = (
@@ -159,7 +148,7 @@ async def run_single_check(bot, next_target: Optional[datetime] = None, interval
         changes = result.get("changes", [])
         total_change = result.get("total_change")
 
-        # In đúng 1 dòng log duy nhất bao gồm trạng thái giỏ + internet
+        # In đúng 1 dòng log duy nhất bao gồm trạng thái giỏ, thời gian quét và dung lượng mạng
         log_check_result(
             check_num=dashboard.total_checks,
             status="ok",
@@ -168,8 +157,8 @@ async def run_single_check(bot, next_target: Optional[datetime] = None, interval
             changes=changes,
             next_time=next_target,
             interval_mins=interval_mins,
-            is_online=True,
-            latency=latency
+            duration=duration,
+            data_bytes=data_bytes
         )
 
         # Xử lý trường hợp có biến động giá sản phẩm hoặc phân loại
@@ -181,8 +170,8 @@ async def run_single_check(bot, next_target: Optional[datetime] = None, interval
         log_check_result(
             check_num=dashboard.total_checks,
             status=status or "error",
-            is_online=True,
-            latency=latency,
+            duration=duration,
+            data_bytes=data_bytes,
             error_msg=result.get("message")
         )
 
@@ -191,9 +180,7 @@ async def start_scheduler_loop(bot) -> None:
     """Vòng lặp tự động chạy kiểm tra theo lịch"""
     scheduler_state["is_running"] = True
 
-    is_online, latency = await asyncio.to_thread(check_internet)
-    badge = format_net_badge(is_online, latency)
-    print_cli(f"{badge} [bold cyan]Scheduler tự động đã khởi động:[/] 1p/lần (:00-:15) & 5p/lần (:20-:55)")
+    print_cli("[bold cyan]Scheduler tự động đã khởi động:[/] 1p/lần (:00-:15) & 5p/lần (:20-:55)")
 
     while True:
         try:

@@ -1,8 +1,8 @@
 """
-CLI Logger & Internet Monitor Module
+CLI Logger & Performance Monitor Module
 Giao diện dòng lệnh tinh gọn dạng log thông thường:
-- Theo dõi kết nối Internet & đo latency (ms) thời gian thực.
-- Mỗi lần quét giỏ hàng xuất ra đúng 1 dòng log tổng hợp (Thời gian | Internet Status | Giỏ hàng | Biến động | Lần quét kế tiếp).
+- Tính toán thời gian quét (giây) và lượng dữ liệu mạng tiêu thụ (KB/MB) trong mỗi lượt.
+- Mỗi lần quét giỏ hàng xuất ra đúng 1 dòng log tổng hợp (Thời gian | Giỏ hàng | Biến động | Thời gian quét | Dung lượng mạng | Lần quét kế tiếp).
 """
 
 import os
@@ -18,11 +18,21 @@ from rich.console import Console
 console = Console(legacy_windows=False, highlight=False)
 
 
+def format_bytes(num_bytes: int) -> str:
+    """Định dạng số bytes thành B, KB hoặc MB dễ đọc"""
+    if not num_bytes or num_bytes <= 0:
+        return "0 B"
+    kb = num_bytes / 1024
+    if kb < 1:
+        return f"{num_bytes} B"
+    if kb < 1024:
+        return f"{kb:.0f} KB"
+    mb = kb / 1024
+    return f"{mb:.2f} MB"
+
+
 def check_internet(timeout: float = 2.0) -> Tuple[bool, int]:
-    """
-    Kiểm tra kết nối Internet và đo latency (ms).
-    Thực hiện TCP handshake tới 8.8.8.8:53 hoặc 1.1.1.1:53 (siêu nhanh, không tốn DNS lookup).
-    """
+    """Hàm phụ trợ giữ tương thích ngược"""
     endpoints = [("8.8.8.8", 53), ("1.1.1.1", 53)]
     for host, port in endpoints:
         start = time.perf_counter()
@@ -39,7 +49,7 @@ def check_internet(timeout: float = 2.0) -> Tuple[bool, int]:
 
 
 def format_net_badge(is_online: bool, latency: int = 0) -> str:
-    """Format nhãn trạng thái Internet hiển thị trên dòng log"""
+    """Hàm phụ trợ giữ tương thích ngược"""
     if is_online:
         return f"[bold green][NET: OK {latency}ms][/]"
     return "[bold red][NET: OFFLINE][/]"
@@ -50,7 +60,6 @@ def print_cli(msg: str):
     try:
         console.print(msg)
     except Exception:
-        # Fallback in plain text nếu terminal lỗi mã hóa
         clean = msg.replace("[bold green]", "").replace("[/]", "").replace("[bold red]", "")
         print(clean)
 
@@ -63,33 +72,36 @@ def log_check_result(
     changes: Optional[List[Dict[str, Any]]] = None,
     next_time: Optional[datetime] = None,
     interval_mins: int = 1,
-    is_online: bool = True,
-    latency: int = 0,
+    duration: float = 0.0,
+    data_bytes: int = 0,
     error_msg: Optional[str] = None
 ):
     """
-    In đúng 1 dòng log tinh gọn sau mỗi lượt quét giỏ hàng kèm trạng thái Internet:
+    In đúng 1 dòng log tinh gọn sau mỗi lượt quét giỏ hàng kèm thời gian và dung lượng mạng:
     Ví dụ:
-    [17:25:00] [NET: OK 35ms] Quét giỏ #1: 19 SKU | Tổng: 1,642,000₫ | Giá không đổi | Kế tiếp: 17:26:00 (1m)
+    [17:25:00] Quét giỏ #1: 19 SKU | Tổng: 1,642,000₫ | Giá không đổi | ⏱️ 1.8s | 📶 412 KB | Kế tiếp: 17:26:00 (1m)
     """
     now_str = datetime.now().strftime("%H:%M:%S")
-    net_badge = format_net_badge(is_online, latency)
 
-    if not is_online:
-        print_cli(f"[dim][{now_str}][/] {net_badge} [bold red]Quét giỏ #{check_num}: Mất kết nối Internet! Bỏ qua lượt quét.[/]")
-        return
+    # Đoạn text hiệu năng (thời gian quét + dung lượng mạng)
+    perf_parts = []
+    if duration > 0:
+        perf_parts.append(f"⏱️ [yellow]{duration:.1f}s[/]")
+    if data_bytes > 0:
+        perf_parts.append(f"📶 [cyan]{format_bytes(data_bytes)}[/]")
+    perf_info = f" | {' | '.join(perf_parts)}" if perf_parts else ""
 
     if status == "need_login":
-        print_cli(f"[dim][{now_str}][/] {net_badge} [bold red]Quét giỏ #{check_num}: Cookie hết hạn! Vui lòng nạp lại qua /cookie[/]")
+        print_cli(f"[dim][{now_str}][/] [bold red]Quét giỏ #{check_num}: Cookie hết hạn! Vui lòng nạp lại qua /cookie[/]{perf_info}")
         return
 
     if status == "empty":
-        print_cli(f"[dim][{now_str}][/] {net_badge} [yellow]Quét giỏ #{check_num}: Giỏ hàng trống (0 SKU)[/]")
+        print_cli(f"[dim][{now_str}][/] [yellow]Quét giỏ #{check_num}: Giỏ hàng trống (0 SKU)[/]{perf_info}")
         return
 
     if status != "ok":
         err = error_msg or "Lỗi không xác định"
-        print_cli(f"[dim][{now_str}][/] {net_badge} [bold red]Quét giỏ #{check_num}: Lỗi - {err}[/]")
+        print_cli(f"[dim][{now_str}][/] [bold red]Quét giỏ #{check_num}: Lỗi - {err}[/]{perf_info}")
         return
 
     products = products or []
@@ -105,11 +117,12 @@ def log_check_result(
         change_desc = "[green]Giá không đổi[/]"
 
     line = (
-        f"[dim][{now_str}][/] {net_badge} "
+        f"[dim][{now_str}][/] "
         f"[bold cyan]Quét giỏ #{check_num}:[/] "
         f"[bold white]{sku_count} SKU[/] | "
         f"Tổng: [bold green]{total_str}[/] | "
-        f"{change_desc} | "
+        f"{change_desc}"
+        f"{perf_info} | "
         f"Kế tiếp: [dim]{next_str} ({interval_mins}m)[/]"
     )
     print_cli(line)
