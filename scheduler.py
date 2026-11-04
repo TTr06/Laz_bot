@@ -8,6 +8,7 @@ Lịch trình tự động kiểm tra giỏ hàng:
 
 import asyncio
 import logging
+import random
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
@@ -193,8 +194,10 @@ async def start_scheduler_loop(bot) -> None:
             scheduler_state["current_mode"] = mode_str
             scheduler_state["next_check_time"] = target_time.strftime("%H:%M:%S %d/%m/%Y")
 
-            # Chờ đến thời điểm kế tiếp
-            await asyncio.sleep(delay_seconds)
+            # Thêm jitter ngẫu nhiên (-3s đến +5s) chống bot pattern và bảo vệ cookie
+            jitter = random.uniform(-3.0, 5.0)
+            sleep_time = max(delay_seconds + jitter, 2.0)
+            await asyncio.sleep(sleep_time)
 
             # Kiểm tra nếu tính năng auto track đang được bật
             if is_auto_track_enabled():

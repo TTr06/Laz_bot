@@ -31,6 +31,7 @@ from anti_detect import (
     COOKIES_FILE,
 )
 from target_price_manager import should_notify_price_change, get_target_price
+from cart_api import scrape_cart_via_requests
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PRICE_HISTORY_FILE = os.path.join(BASE_DIR, "price_history.json")
@@ -94,16 +95,10 @@ def _extract_data_bytes(driver) -> int:
         return 0
 
 
-def scrape_cart(headless: bool = True, keep_alive: bool = False) -> Dict[str, Any]:
+def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False) -> Dict[str, Any]:
     """
-    Truy cập giỏ hàng Lazada, tick 'Chọn tất cả' ngay tại giỏ hàng và đọc giá thực tế sau giảm.
-    Cam kết: KHÔNG BAO GIỜ bấm vào nút thanh toán (CONFIRM CART / Checkout).
-    Tối ưu hóa:
-    - Chặn ảnh & web fonts giúp tải trang siêu tốc.
-    - Polling thông minh (Smart Polling) thay vì sleep cứng, phản hồi tức thì khi dữ liệu xuất hiện.
-    - Cuộn trang tức thời bằng JavaScript.
-    - Tùy chọn keep_alive giữ phiên trình duyệt để quét tức thì (< 2s).
-    - Đo lường thời gian quét (giây) và tổng dữ liệu mạng tiêu thụ (bytes).
+    Truy cập giỏ hàng Lazada bằng trình duyệt Selenium Chromium, tick 'Chọn tất cả' ngay tại giỏ hàng.
+    Phương án dự phòng khi Cart API cần render giao diện hoặc gặp Captcha.
     """
     t_start = time.perf_counter()
     if not os.path.exists(COOKIES_FILE):
@@ -352,11 +347,28 @@ def _extract_cart_and_summary(driver) -> tuple[List[Dict[str, Any]], Dict[str, A
     return products, summary_data
 
 
-def track_prices(headless: bool = True, keep_driver: bool = False) -> dict:
+def scrape_cart(headless: bool = True, keep_alive: bool = False, prefer_api: bool = True) -> Dict[str, Any]:
+    """
+    Truy cập giỏ hàng Lazada và trích xuất danh sách sản phẩm & giá:
+    - Chế độ 1 (prefer_api=True): Dùng Cart API qua requests trực tiếp (< 0.5s, 5-20 KB, an toàn cookie tối đa).
+    - Chế độ 2 (Dự phòng): Tự động chuyển sang Selenium Chromium nếu API cần render giao diện hoặc gặp Captcha.
+    """
+    if prefer_api:
+        api_res = scrape_cart_via_requests()
+        status = api_res.get("status")
+        # Nếu API thành công hoặc phát hiện cookie hết hạn / giỏ trống -> trả về ngay
+        if status in ("ok", "need_login", "empty"):
+            return api_res
+
+    # Fallback sang Selenium Chromium
+    return scrape_cart_selenium(headless=headless, keep_alive=keep_alive)
+
+
+def track_prices(headless: bool = True, keep_driver: bool = False, prefer_api: bool = True) -> dict:
     """
     Theo dõi biến động giá thực tế của TẤT CẢ sản phẩm và TẤT CẢ phân loại (SKU).
     """
-    scrape_res = scrape_cart(headless=headless, keep_alive=keep_driver)
+    scrape_res = scrape_cart(headless=headless, keep_alive=keep_driver, prefer_api=prefer_api)
     if scrape_res["status"] != "ok":
         return scrape_res
 
