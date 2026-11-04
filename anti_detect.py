@@ -187,6 +187,23 @@ def create_stealth_driver(headless: bool = True) -> webdriver.Chrome:
         """
     })
 
+    # Chặn các mạng quảng cáo và tracking bên thứ ba (Criteo, DoubleClick, Facebook, UCWeb)
+    # Giúp tải trang siêu nhanh, tiết kiệm RAM/mạng và ngăn thu thập fingerprint
+    try:
+        driver.execute_cdp_cmd('Network.enable', {})
+        driver.execute_cdp_cmd('Network.setBlockedURLs', {
+            'urls': [
+                '*criteo.com*',
+                '*doubleclick.net*',
+                '*google-analytics.com*',
+                '*facebook.net*',
+                '*px-intl.ucweb.com*',
+                '*pagead2.googlesyndication.com*'
+            ]
+        })
+    except Exception:
+        pass
+
     return driver
 
 

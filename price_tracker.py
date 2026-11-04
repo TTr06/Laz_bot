@@ -347,11 +347,11 @@ def _extract_cart_and_summary(driver) -> tuple[List[Dict[str, Any]], Dict[str, A
     return products, summary_data
 
 
-def scrape_cart(headless: bool = True, keep_alive: bool = False, prefer_api: bool = True) -> Dict[str, Any]:
+def scrape_cart(headless: bool = True, keep_alive: bool = False, prefer_api: bool = False) -> Dict[str, Any]:
     """
-    Truy cập giỏ hàng Lazada và trích xuất danh sách sản phẩm & giá:
-    - Chế độ 1 (prefer_api=True): Dùng Cart API qua requests trực tiếp (< 0.5s, 5-20 KB, an toàn cookie tối đa).
-    - Chế độ 2 (Dự phòng): Tự động chuyển sang Selenium Chromium nếu API cần render giao diện hoặc gặp Captcha.
+    Truy cập giỏ hàng Lazada và trích xuất danh sách sản phẩm & Giá Cuối Cùng:
+    - Mặc định (prefer_api=False): Chạy qua Chromium headless, click 'Chọn tất cả' trong giỏ để kích hoạt toàn bộ Voucher sàn, Voucher shop, LazCoins và lấy chính xác 100% Giá Cuối Cùng.
+    - Chế độ API siêu nhẹ (prefer_api=True): Dùng Cart API qua requests trực tiếp (< 0.5s, 5-20 KB) khi chỉ cần đọc danh sách sản phẩm cơ bản.
     """
     if prefer_api:
         api_res = scrape_cart_via_requests()
@@ -360,11 +360,11 @@ def scrape_cart(headless: bool = True, keep_alive: bool = False, prefer_api: boo
         if status in ("ok", "need_login", "empty"):
             return api_res
 
-    # Fallback sang Selenium Chromium
+    # Chạy Selenium Chromium để click Chọn tất cả và tính Giá Cuối Cùng chính xác
     return scrape_cart_selenium(headless=headless, keep_alive=keep_alive)
 
 
-def track_prices(headless: bool = True, keep_driver: bool = False, prefer_api: bool = True) -> dict:
+def track_prices(headless: bool = True, keep_driver: bool = False, prefer_api: bool = False) -> dict:
     """
     Theo dõi biến động giá thực tế của TẤT CẢ sản phẩm và TẤT CẢ phân loại (SKU).
     """

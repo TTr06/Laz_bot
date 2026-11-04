@@ -31,12 +31,12 @@ def run_demo():
     ]
     summary = {"Total": "427,000₫"}
 
-    # Mô phỏng các lượt quét qua Cart API siêu tốc và siêu nhẹ
+    # Mô phỏng các lượt quét (chọn tất cả và tính Giá Cuối Cùng chính xác)
     demo_perf = [
-        (0.26, 14 * 1024),   # 0.26s, 14 KB
-        (0.31, 16 * 1024),   # 0.31s, 16 KB
-        (0.28, 15 * 1024),   # 0.28s, 15 KB
-        (0.25, 14 * 1024),   # 0.25s, 14 KB
+        (1.4, 210 * 1024),   # 1.4s, 210 KB
+        (1.2, 195 * 1024),   # 1.2s, 195 KB
+        (1.5, 220 * 1024),   # 1.5s, 220 KB
+        (1.3, 198 * 1024),   # 1.3s, 198 KB
     ]
 
     for check_num in range(1, 5):
@@ -66,8 +66,8 @@ def run_demo():
     log_check_result(
         check_num=5,
         status="need_login",
-        duration=0.22,
-        data_bytes=161
+        duration=0.8,
+        data_bytes=45 * 1024
     )
 
     print_cli("------------------------------------------------------------------")
