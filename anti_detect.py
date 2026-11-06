@@ -132,6 +132,13 @@ def create_stealth_driver(headless: bool = True) -> webdriver.Chrome:
     options.add_argument("--disk-cache-size=1048576")
     options.add_argument("--media-cache-size=1048576")
 
+    # Chống crash tab (OOM / renderer crash) khi chạy liên tục hàng trăm lượt:
+    options.add_argument("--js-flags=--max-old-space-size=256")
+    options.add_argument("--disable-crash-reporter")
+    options.add_argument("--disable-breakpad")
+    options.add_argument("--aggressive-cache-discard")
+    options.add_argument("--disable-features=Translate,OptimizationHints,MediaRouter")
+
     # Ngăn lỗi renderer timeout do hệ điều hành throttle tiến trình trên Android / Linux / PRoot
     options.add_argument("--disable-renderer-backgrounding")
     options.add_argument("--disable-backgrounding-occluded-windows")
@@ -302,7 +309,7 @@ def save_cookies(driver) -> int:
 # Biến singleton quản lý phiên trình duyệt dùng chung để tối ưu tốc độ quét định kỳ
 _shared_driver = None
 _shared_driver_uses = 0
-_shared_driver_max_uses = 15  # Tự động refresh trình duyệt sau 15 lượt quét để giải phóng RAM triệt để
+_shared_driver_max_uses = 8  # Tự động refresh trình duyệt sau mỗi 8 lượt quét để giải phóng RAM triệt để, chống tab crash
 
 
 def get_or_create_driver(headless: bool = True) -> webdriver.Chrome:
@@ -328,11 +335,16 @@ def get_or_create_driver(headless: bool = True) -> webdriver.Chrome:
 
 
 def close_shared_driver() -> None:
-    """Đóng phiên trình duyệt dùng chung và giải phóng RAM"""
+    """Đóng phiên trình duyệt dùng chung và giải phóng RAM triệt để"""
     global _shared_driver, _shared_driver_uses
     if _shared_driver is not None:
         try:
             _shared_driver.quit()
+        except Exception:
+            pass
+        try:
+            if hasattr(_shared_driver, 'service') and _shared_driver.service and hasattr(_shared_driver.service, 'process') and _shared_driver.service.process:
+                _shared_driver.service.process.kill()
         except Exception:
             pass
         _shared_driver = None

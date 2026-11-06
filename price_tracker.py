@@ -95,10 +95,11 @@ def _extract_data_bytes(driver) -> int:
         return 0
 
 
-def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False) -> Dict[str, Any]:
+def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False, max_retries: int = 1) -> Dict[str, Any]:
     """
     Truy cập giỏ hàng Lazada bằng trình duyệt Selenium Chromium, tick 'Chọn tất cả' ngay tại giỏ hàng.
     Phương án dự phòng khi Cart API cần render giao diện hoặc gặp Captcha.
+    Tích hợp cơ chế tự phục hồi: nếu tab bị crash (OOM / renderer crash), tự dọn dẹp và thử lại ngay.
     """
     t_start = time.perf_counter()
     if not os.path.exists(COOKIES_FILE):
@@ -255,6 +256,17 @@ def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False) -> Dic
         data_bytes = _extract_data_bytes(driver) if driver else 0
         if keep_alive:
             close_shared_driver()
+
+        err_str = str(e).lower()
+        is_crash = any(w in err_str for w in [
+            "tab crashed", "disconnected", "session deleted",
+            "no such window", "target window already closed", "cannot determine loading status"
+        ])
+        if is_crash and max_retries > 0:
+            print(f"[!] Phát hiện Chrome crash ({e}). Tự động dọn dẹp và thử quét lại ngay...")
+            time.sleep(1.2)
+            return scrape_cart_selenium(headless=headless, keep_alive=keep_alive, max_retries=max_retries - 1)
+
         return {
             "status": "error",
             "message": f"Lỗi khi đọc giỏ hàng: {e}",
