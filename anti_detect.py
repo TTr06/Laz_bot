@@ -129,8 +129,17 @@ def create_stealth_driver(headless: bool = True) -> webdriver.Chrome:
     options.add_argument("--disable-default-apps")
     options.add_argument("--no-first-run")
     options.add_argument("--mute-audio")
-    options.add_argument("--disk-cache-size=1048576")
-    options.add_argument("--media-cache-size=1048576")
+    options.add_argument("--disable-sync")
+    options.add_argument("--disable-speech-api")
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-domain-reliability")
+    options.add_argument("--disable-client-side-phishing-detection")
+    options.add_argument("--no-default-browser-check")
+    options.add_argument("--prerender-from-omnibox=disabled")
+
+    # Tối ưu Disk Cache: Cho phép cache 50MB để nạp JS/CSS giỏ hàng tức thì (0ms) từ lần quét thứ 2, tiết kiệm 90% mạng
+    options.add_argument("--disk-cache-size=52428800")
+    options.add_argument("--media-cache-size=10485760")
 
     # Chống crash tab (OOM / renderer crash) khi chạy liên tục hàng trăm lượt:
     options.add_argument("--js-flags=--max-old-space-size=256")

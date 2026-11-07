@@ -186,37 +186,32 @@ def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False, max_re
                 "data_bytes": data_bytes
             }
 
-        # 2. Cuộn trang siêu tốc bằng JavaScript để kích hoạt Lazy-load nạp 100% tất cả SKU
+        # 2. Click 'Chọn tất cả' và chờ summary cập nhật trực tiếp trong bộ nhớ browser (In-Memory Polling)
+        # Giảm 15 vòng lặp IPC qua socket xuống đúng 1 lần chạy JS duy nhất (< 300ms)
+        summary_raw_text = ""
         try:
-            driver.execute_script("""
-                window.scrollTo(0, document.body.scrollHeight || 3000);
-                setTimeout(function() { window.scrollTo(0, 0); }, 150);
-            """)
-            time.sleep(0.25)
+            driver.set_script_timeout(5)
+            summary_raw_text = driver.execute_async_script("""
+                var callback = arguments[arguments.length - 1];
+                var cb = document.querySelector('.list-header-checkbox input, .checkbox-wrap label, .list-header-checkbox, .checkbox-wrap input');
+                if (cb) {
+                    cb.click();
+                }
+                var start = Date.now();
+                var timer = setInterval(function() {
+                    var el = document.querySelector('.checkout-summary, .summary-section');
+                    var txt = el ? el.innerText : '';
+                    if ((txt && txt.indexOf('0 items') === -1) || (Date.now() - start > 1200)) {
+                        clearInterval(timer);
+                        callback(txt);
+                    }
+                }, 50);
+            """) or ""
         except Exception:
             pass
 
-        # 3. CHỈ CLICK NÚT 'CHỌN TẤT CẢ' TRÊN GIAO DIỆN GIỎ HÀNG
-        # TUYỆT ĐỐI KHÔNG CLICK VÀO NÚT THANH TOÁN (CHECKOUT)!
-        driver.execute_script("""
-            var selectAllCheckbox = document.querySelector('.list-header-checkbox input, .checkbox-wrap label, .list-header-checkbox, .checkbox-wrap input');
-            if (selectAllCheckbox) {
-                selectAllCheckbox.click();
-            }
-        """)
-
-        # 4. Chờ thông minh số tiền summary cập nhật (tối đa 1.5s, tick mỗi 100ms)
-        for _ in range(15):
-            summary_txt = driver.execute_script("""
-                var el = document.querySelector('.checkout-summary, .summary-section');
-                return el ? el.innerText : '';
-            """)
-            if summary_txt and "0 items" not in summary_txt:
-                break
-            time.sleep(0.1)
-
-        # 5. Đọc dữ liệu từng sản phẩm & từng phân loại và Giá Cuối Cùng ngay tại giỏ
-        products, summary_data = _extract_cart_and_summary(driver)
+        # 3. Đọc dữ liệu từng sản phẩm & từng phân loại và Giá Cuối Cùng ngay tại giỏ
+        products, summary_data = _extract_cart_and_summary(driver, summary_raw_text=summary_raw_text)
 
         data_bytes = _extract_data_bytes(driver)
         duration = round(time.perf_counter() - t_start, 2)
@@ -280,7 +275,7 @@ def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False, max_re
             safe_quit(driver)
 
 
-def _extract_cart_and_summary(driver) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def _extract_cart_and_summary(driver, summary_raw_text: Optional[str] = None) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     products = []
     summary_data = {}
 
@@ -333,10 +328,11 @@ def _extract_cart_and_summary(driver) -> tuple[List[Dict[str, Any]], Dict[str, A
 
     # Đọc phần tóm tắt đơn hàng (Order Summary) trực tiếp từ giao diện giỏ hàng
     try:
-        summary_raw_text = driver.execute_script("""
-            var el = document.querySelector('.checkout-summary, .summary-section');
-            return el ? el.innerText : '';
-        """)
+        if not summary_raw_text:
+            summary_raw_text = driver.execute_script("""
+                var el = document.querySelector('.checkout-summary, .summary-section');
+                return el ? el.innerText : '';
+            """)
         if summary_raw_text:
             m_total = re.search(r'Total[\s\t]+(₫?\s*[\d\.,]+)', summary_raw_text, re.IGNORECASE)
             if m_total:
