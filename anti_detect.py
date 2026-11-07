@@ -91,10 +91,17 @@ def random_delay(min_sec: float = 1.0, max_sec: float = 2.5) -> None:
 def safe_quit(driver) -> None:
     if not driver:
         return
+    service_proc = getattr(getattr(driver, "service", None), "process", None)
     try:
         driver.quit()
     except Exception:
         pass
+    finally:
+        try:
+            if service_proc and service_proc.poll() is None:
+                service_proc.kill()
+        except Exception:
+            pass
 
 
 def create_stealth_driver(headless: bool = True) -> webdriver.Chrome:
@@ -142,7 +149,6 @@ def create_stealth_driver(headless: bool = True) -> webdriver.Chrome:
     options.add_argument("--media-cache-size=10485760")
 
     # Chống crash tab (OOM / renderer crash) khi chạy liên tục hàng trăm lượt:
-    options.add_argument("--js-flags=--max-old-space-size=256")
     options.add_argument("--disable-crash-reporter")
     options.add_argument("--disable-breakpad")
     options.add_argument("--aggressive-cache-discard")

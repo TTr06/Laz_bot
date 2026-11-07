@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand colors -->
+    <color name="primary">#F85606</color> <!-- Lazada Orange -->
+    <color name="primary_variant">#D04400</color>
+    <color name="secondary">#0F1568</color> <!-- Lazada Navy Blue -->
+    <color name="background">#121212</color>
+    <color name="surface">#1E1E1E</color>
+    <color name="surface_card">#2A2A2A</color>
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#AAAAAA</color>
+    <color name="success">#00C853</color>
+    <color name="error">#FF1744</color>
+    <color name="white">#FFFFFF</color>
+
+    <!-- Aliases for main activity theme -->
+    <color name="laz_orange">#F85606</color>
+    <color name="laz_bg">#121212</color>
+    <color name="laz_card">#1E1E1E</color>
+    <color name="laz_input">#262626</color>
+    <color name="laz_text_main">#FFFFFF</color>
+    <color name="laz_text_sub">#A0AEC0</color>
+</resources>
