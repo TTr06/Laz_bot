@@ -32,6 +32,7 @@ from anti_detect import (
 )
 from target_price_manager import should_notify_price_change, get_target_price
 from cart_api import scrape_cart_via_requests
+import database
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PRICE_HISTORY_FILE = os.path.join(BASE_DIR, "price_history.json")
@@ -476,6 +477,12 @@ def track_prices(headless: bool = True, keep_driver: bool = False, prefer_api: b
     history["order_summary"] = summary
     save_price_history(history)
 
+    # Lưu đồng bộ vào SQLite và gán STT chuẩn xác 100%
+    try:
+        products = database.save_cart_to_db(products, summary)
+    except Exception as e:
+        print(f"[!] Lỗi lưu giỏ hàng SQLite: {e}")
+
     return {
         "status": "ok",
         "total_products": len(products),
@@ -491,8 +498,8 @@ def track_prices(headless: bool = True, keep_driver: bool = False, prefer_api: b
 
 def format_cart_messages(products: List[dict], summary: dict) -> List[str]:
     """
-    Format danh sách sản phẩm và tổng tiền, tự động chia thành nhiều tin nhắn nếu vượt giới hạn ký tự Telegram.
-    ĐẢM BẢO HIỂN THỊ ĐẦY ĐỦ 100% TẤT CẢ SẢN PHẨM VÀ TẤT CẢ PHÂN LOẠI (SKU).
+    Định dạng danh sách sản phẩm và tổng tiền giỏ hàng gọn gàng, súc tích.
+    Tự động chia nhỏ tin nhắn nếu vượt giới hạn 4096 ký tự của Telegram.
     """
     messages = []
     current_lines = []
@@ -501,31 +508,29 @@ def format_cart_messages(products: List[dict], summary: dict) -> List[str]:
     invalid_items = [p for p in products if not p.get("valid", True)]
     total_count = len(products)
 
-    # 1. Header & Order Summary (Chỉ hiển thị ở đầu tin nhắn đầu tiên)
-    current_lines.append(f"🛒 <b>GIỎ HÀNG LAZADA ({total_count} SẢN PHẨM & PHÂN LOẠI):</b>\n")
+    # 1. Header & Tóm tắt giỏ hàng
+    current_lines.append(f"🛒 <b>GIỎ HÀNG LAZADA ({total_count} mặt hàng)</b>")
 
     if summary and "Total" in summary:
-        current_lines.append(f"🔥 <b>GIÁ CUỐI CÙNG TOÀN GIỎ:</b> <code>{summary['Total']}</code>")
+        current_lines.append(f"💵 <b>Giá cuối:</b> <code>{summary['Total']}</code>")
         sub = summary.get("Subtotal")
         promo = summary.get("Promotion")
         ship = summary.get("Shipping Fee")
         details = []
         if sub: details.append(f"Tạm tính: {sub}")
-        if promo: details.append(f"Voucher giảm: {promo}")
+        if promo: details.append(f"Giảm: {promo}")
         if ship: details.append(f"Ship: {ship}")
         if details:
-            current_lines.append(f"ℹ️ <i>({', '.join(details)})</i>")
-        current_lines.append("━━━━━━━━━━━━━━━━━━━━\n")
+            current_lines.append(f"<i>({', '.join(details)})</i>")
+        current_lines.append("────────────────────\n")
 
-    current_lines.append("📦 <b>Chi tiết tất cả mặt hàng & phân loại:</b>")
-
-    # Ước lượng độ dài ký tự
+    current_lines.append("📦 <b>Danh sách sản phẩm:</b>")
     current_char_count = sum(len(line) + 2 for line in current_lines)
 
     for i, p in enumerate(valid_items, 1):
+        stt = p.get("stt", i)
         name = p.get("name", "").strip()
-        # Hiển thị tên rõ ràng (tối đa 75 ký tự)
-        name_display = name[:75] + ("..." if len(name) > 75 else "")
+        name_display = name[:70] + ("..." if len(name) > 70 else "")
         sku_val = p.get("sku", "").strip()
         sku = f"\n   🏷️ <i>Phân loại: {sku_val}</i>" if sku_val else ""
         price = p.get("price")
@@ -535,37 +540,36 @@ def format_cart_messages(products: List[dict], summary: dict) -> List[str]:
         target_info = ""
         if target_p:
             if price and price <= target_p:
-                target_info = f"\n   🎯 <i>Mục tiêu: ≤ {target_p:,.0f}₫ (ĐÃ ĐẠT! 🎉)</i>"
+                target_info = f"\n   🎯 <i>Giá đáy: ≤ {target_p:,.0f}₫ (Đã đạt 🎉)</i>"
             else:
-                target_info = f"\n   🎯 <i>Mục tiêu: ≤ {target_p:,.0f}₫ (Đang chờ)</i>"
+                target_info = f"\n   🎯 <i>Giá đáy: ≤ {target_p:,.0f}₫</i>"
 
         if p.get("has_discount") and p.get("base_price"):
             base_p = p["base_price"]
             diff = p.get("discount_amount", 0)
             item_block = (
-                f"<b>{i}. {name_display}</b>{sku}{target_info}\n"
-                f"   💰 Giá cuối: <b>{price:,.0f}₫</b> <s>{base_p:,.0f}₫</s> <i>(-{diff:,.0f}₫)</i>"
+                f"<b>{stt}. {name_display}</b>{sku}{target_info}\n"
+                f"   💰 Giá: <b>{price:,.0f}₫</b> <s>{base_p:,.0f}₫</s> <i>(-{diff:,.0f}₫)</i>"
             )
         else:
             price_str = f"{price:,.0f}₫" if price else "N/A"
             item_block = (
-                f"<b>{i}. {name_display}</b>{sku}{target_info}\n"
-                f"   💰 Giá cuối: <b>{price_str}</b>"
+                f"<b>{stt}. {name_display}</b>{sku}{target_info}\n"
+                f"   💰 Giá: <b>{price_str}</b>"
             )
 
         block_len = len(item_block) + 2
-        # Nếu cộng thêm mặt hàng này vượt quá 3500 ký tự thì ngắt sang tin nhắn mới
         if current_char_count + block_len > 3500 and current_lines:
             messages.append("\n\n".join(current_lines))
-            current_lines = [f"📦 <b>Chi tiết sản phẩm giỏ hàng (tiếp theo):</b>"]
+            current_lines = [f"📦 <b>Danh sách sản phẩm (tiếp theo):</b>"]
             current_char_count = len(current_lines[0])
 
         current_lines.append(item_block)
         current_char_count += block_len
 
-    # Mặt hàng hết hàng / không khả dụng
+    # Mặt hàng hết hàng
     if invalid_items:
-        inv_header = "\n⚠️ <b>Mặt hàng hết hàng (không thể chọn):</b>"
+        inv_header = "\n⚠️ <b>Mặt hàng hết hàng:</b>"
         if current_char_count + len(inv_header) > 3500:
             messages.append("\n\n".join(current_lines))
             current_lines = []
@@ -584,7 +588,7 @@ def format_cart_messages(products: List[dict], summary: dict) -> List[str]:
             current_lines.append(inv_block)
             current_char_count += len(inv_block) + 2
 
-    footer = "🛡️ <i>Chỉ kiểm tra và tính giá tại giỏ hàng, hoàn toàn không chuyển sang trang thanh toán.</i>"
+    footer = "💡 <i>Đặt giá đáy nhận cảnh báo: <code>/setprice &lt;STT&gt; &lt;giá&gt;</code></i>"
     if current_char_count + len(footer) > 3700:
         messages.append("\n\n".join(current_lines))
         current_lines = [footer]
@@ -636,7 +640,7 @@ def format_changes_alert(changes: list, total_change: Optional[dict] = None) -> 
             diff_str = f"{abs(c['diff']):,.0f}₫"
             target_badge = ""
             if c.get("reached_target") and c.get("target_price"):
-                target_badge = f"   🎯 <b>ĐÃ ĐẠT GIÁ MỤC TIÊU: ≤ {c['target_price']:,.0f}₫!</b> 🎉\n"
+                target_badge = f"   🎯 <b>ĐÃ CHẠM GIÁ ĐÁY: ≤ {c['target_price']:,.0f}₫!</b> 🎉\n"
 
             lines.append(
                 f"{icon} <b>{name}</b>\n"

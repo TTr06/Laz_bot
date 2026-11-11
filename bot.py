@@ -16,6 +16,7 @@ import os
 import re
 import sys
 from datetime import datetime
+from typing import Tuple, List, Dict, Optional, Any
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.stderr.reconfigure(encoding='utf-8', errors='replace')
@@ -33,6 +34,7 @@ from telegram.ext import (
 
 from cart_adder import extract_lazada_url, fetch_product_details, add_sku_to_cart
 from anti_detect import close_shared_driver
+import database
 
 from cookie_manager import (
     parse_cookie_input,
@@ -97,23 +99,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     msg = (
         f"Xin chào <b>{user.first_name}</b>! 👋\n\n"
-        f"🤖 Tôi là <b>Father Bot</b> - Công cụ theo dõi giá giỏ hàng Lazada tự động (Anti-detect).\n\n"
-        f"🎯 <b>Tính năng nổi bật:</b>\n"
-        f"• Đăng nhập bằng Cookie (Không mở trình duyệt)\n"
-        f"• Tự động tick <b>Chọn tất cả</b> để đọc giá sau Voucher & Khuyến mãi\n"
-        f"• Theo dõi độc lập <b>tất cả phân loại (SKU)</b> của từng sản phẩm\n"
-        f"• Tần suất quét: <b>1 phút/lần</b> (15p đầu giờ) & <b>5 phút/lần</b> (đến hết giờ)\n"
-        f"• <b>Đặt giá mục tiêu:</b> Cài mức giá mong muốn (<code>/setprice</code>), bot CHỈ báo khi giá giảm xuống ≤ mức này!\n"
-        f"• Tự động gửi cảnh báo kèm <b>thông tin phân loại & link mua hàng</b>\n"
-        f"• <b>Thêm vào giỏ hàng bằng link</b>: Dán link sản phẩm là có nút chọn phân loại ngay\n"
-        f"• An toàn tuyệt đối: Không bao giờ bấm vào trang thanh toán\n\n"
-        f"🔗 <b>Thêm sản phẩm mới vào giỏ:</b>\n"
-        f"Chỉ cần gửi link Lazada (hoặc gõ <code>/add &lt;link&gt;</code>) vào đây!\n\n"
-        f"🔑 <b>Cách nạp Cookie Lazada:</b>\n"
-        f"1. <b>Dán trực tiếp:</b> Copy JSON từ Cookie-Editor rồi dán thẳng vào tin nhắn này.\n"
-        f"2. <b>Gửi file:</b> Kéo thả hoặc gửi file <code>cookie.json</code>.\n"
-        f"3. <b>Dùng lệnh:</b> <code>/cookie &lt;dán JSON vào đây&gt;</code>\n\n"
-        f"👉 Gõ /help để xem toàn bộ danh sách lệnh."
+        f"🤖 <b>LazBot</b> - Công cụ theo dõi giá giỏ hàng Lazada và săn giảm giá tự động.\n\n"
+        f"⚡ <b>TÍNH NĂNG CHÍNH:</b>\n"
+        f"• Tự động chọn tất cả sản phẩm để tính <b>Giá cuối cùng</b> (sau Voucher sàn, Shop & LazCoins).\n"
+        f"• Theo dõi độc lập từng lớp phân loại (Màu sắc, Kích cỡ, Chất liệu...).\n"
+        f"• <b>Cài đặt Giá đáy (<code>/setprice</code>)</b>: Chỉ gửi cảnh báo khi giá chạm hoặc thấp hơn mức mong muốn.\n"
+        f"• Thêm sản phẩm nhanh vào giỏ: Gửi link sản phẩm trực tiếp vào chat.\n"
+        f"• Cơ sở dữ liệu SQLite tốc độ cao, đảm bảo số thứ tự (STT) luôn chuẩn xác 100%.\n\n"
+        f"📋 Gõ <code>/help</code> để xem danh sách lệnh hướng dẫn."
     )
     if update.effective_message:
         await update.effective_message.reply_html(msg)
@@ -122,27 +115,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     auto_register_user(update)
     text = (
-        "📖 <b>DANH SÁCH LỆNH CỦA BOT:</b>\n\n"
-        "🛒 <b>Quản lý Giỏ Hàng & Giá:</b>\n"
-        "• <code>/cart</code> : Quét & hiển thị toàn bộ giỏ hàng với Giá Cuối Cùng\n"
+        "📖 <b>HƯỚNG DẪN SỬ DỤNG LAZBOT:</b>\n\n"
+        "🛒 <b>Giỏ hàng & Theo dõi giá:</b>\n"
+        "• <code>/cart</code> : Quét giỏ hàng & tính Giá cuối sau voucher\n"
         "• <code>/track</code> : Kiểm tra biến động giá ngay lập tức\n"
         "• <code>/prices</code> : Xem danh sách giá các mặt hàng đã lưu\n"
-        "• <code>/add &lt;link&gt;</code> : Thêm sản phẩm vào giỏ (chọn phân loại qua nút bấm)\n\n"
-        "🎯 <b>Mức Giá Mục Tiêu (Target Price):</b>\n"
-        "• <code>/setprice &lt;stt&gt; &lt;giá&gt;</code> : Chỉ báo động khi giá giảm xuống ≤ mức này (VD: <code>/setprice 1 100k</code>)\n"
-        "• <code>/delprice &lt;stt&gt;</code> : Xóa mức giá mục tiêu (sẽ báo mọi biến động)\n"
-        "• <code>/targets</code> : Xem danh sách sản phẩm đang cài giá mục tiêu\n\n"
-        "⏰ <b>Lịch Trình Tự Động:</b>\n"
-        "• <code>/schedule</code> (hoặc <code>/auto</code>) : Xem tình trạng lịch quét tự động\n"
-        "• <code>/check_now</code> : Kích hoạt 1 lượt quét giỏ hàng ngay\n"
-        "• <code>/auto_on</code> : Bật chế độ tự động quét theo lịch\n"
-        "• <code>/auto_off</code> : Tắt chế độ tự động quét\n"
-        "• <code>/sub</code> : Đăng ký nhận thông báo cảnh báo giá\n"
-        "• <code>/unsub</code> : Hủy nhận thông báo tự động\n\n"
-        "🔑 <b>Cookie Lazada:</b>\n"
-        "• <code>/cookie &lt;nội_dung&gt;</code> : Nạp cookie trực tiếp\n"
-        "• <code>/cookie_status</code> : Kiểm tra tình trạng cookie hiện tại\n\n"
-        "ℹ️ <code>/ping</code> : Kiểm tra bot còn sống không"
+        "• <code>/add &lt;link&gt;</code> : Thêm sản phẩm vào giỏ hàng\n\n"
+        "🎯 <b>Cài đặt Giá đáy (Săn sale):</b>\n"
+        "• <code>/setprice &lt;STT&gt; &lt;giá&gt;</code> : Đặt giá đáy (VD: <code>/setprice 1 100k</code>)\n"
+        "• <code>/targets</code> : Xem danh sách các mặt hàng đang cài giá đáy\n"
+        "• <code>/delprice &lt;STT&gt;</code> : Xóa giá đáy (quay lại báo mọi biến động)\n\n"
+        "⏰ <b>Tự động quét ngầm:</b>\n"
+        "• <code>/schedule</code> : Tình trạng lịch quét ngầm\n"
+        "• <code>/auto_on</code> / <code>/auto_off</code> : Bật / tắt quét ngầm\n\n"
+        "🔑 <b>Cookie & Tài khoản:</b>\n"
+        "• <code>/cookie &lt;JSON/text&gt;</code> : Nạp cookie mới\n"
+        "• <code>/cookie_status</code> : Kiểm tra trạng thái đăng nhập\n"
+        "• <code>/ping</code> : Kiểm tra phản hồi bot\n"
     )
     if update.effective_message:
         await update.effective_message.reply_html(text)
@@ -218,14 +207,91 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await status_msg.edit_text(f"❌ Lỗi khi đọc file: {e}")
 
 
+def _render_product_selection(session: dict) -> Tuple[str, InlineKeyboardMarkup]:
+    """Tạo giao diện hiển thị thông tin sản phẩm và bàn phím chọn từng lớp phân loại"""
+    title = session.get("title") or "Sản phẩm Lazada"
+    price = session.get("price") or "N/A"
+    orig_price = session.get("orig_price")
+    layers = session.get("layers") or []
+    current_step = session.get("current_step", 0)
+    chosen_options = session.get("chosen_options", [])
+
+    price_line = f"💰 <b>Giá:</b> <code>{price}</code>"
+    if orig_price and orig_price != price:
+        price_line += f" <s>{orig_price}</s>"
+
+    header = (
+        f"🛍️ <b>THÔNG TIN SẢN PHẨM</b>\n\n"
+        f"📦 <b>{title}</b>\n"
+        f"{price_line}\n"
+    )
+
+    # Hiển thị tóm tắt tất cả các lớp phân loại hiện có
+    if layers:
+        layer_summary = ["📋 <b>Các lớp phân loại:</b>"]
+        for idx, lyr in enumerate(layers):
+            lyr_name = lyr.get("name", f"Lớp {idx+1}")
+            opts = [o.get("name", "") for o in lyr.get("options", [])[:6]]
+            opts_str = ", ".join(opts)
+            if len(lyr.get("options", [])) > 6:
+                opts_str += ", ..."
+            layer_summary.append(f"• <b>{lyr_name}:</b> {opts_str}")
+        header += "\n" + "\n".join(layer_summary) + "\n"
+
+    # Hiển thị các lựa chọn đã chốt ở các bước trước (nếu có)
+    if chosen_options:
+        chosen_lines = []
+        for c_idx, c_val in enumerate(chosen_options):
+            l_name = layers[c_idx].get("name", f"Lớp {c_idx+1}")
+            chosen_lines.append(f"✅ <i>{l_name}:</i> <b>{c_val}</b>")
+        header += "\n" + "\n".join(chosen_lines) + "\n"
+
+    # Nếu sản phẩm không có phân loại nào
+    if not layers:
+        text = header + "\n<i>(Sản phẩm có 1 phân loại mặc định)</i>"
+        keyboard = [
+            [InlineKeyboardButton("🛒 Thêm vào giỏ hàng ngay", callback_data="addcart:default")],
+            [InlineKeyboardButton("❌ Hủy", callback_data="addcart:cancel")]
+        ]
+        return text, InlineKeyboardMarkup(keyboard)
+
+    # Hiển thị các nút bấm chọn cho lớp hiện tại
+    cur_layer = layers[current_step]
+    cur_name = cur_layer.get("name", f"Lớp {current_step+1}")
+    total_steps = len(layers)
+
+    step_prompt = f"\n👉 <b>Bước {current_step + 1}/{total_steps}: Chọn {cur_name}</b>"
+    text = header + step_prompt
+
+    keyboard = []
+    row = []
+    for o_idx, opt in enumerate(cur_layer.get("options", [])):
+        opt_name = opt.get("name", "")
+        row.append(InlineKeyboardButton(opt_name, callback_data=f"addcart:step:{current_step}:{o_idx}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
+    # Hàng nút điều hướng
+    nav_row = []
+    if current_step > 0:
+        nav_row.append(InlineKeyboardButton("⬅️ Quay lại", callback_data="addcart:back"))
+    nav_row.append(InlineKeyboardButton("❌ Hủy", callback_data="addcart:cancel"))
+    keyboard.append(nav_row)
+
+    return text, InlineKeyboardMarkup(keyboard)
+
+
 async def handle_lazada_product_link(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> None:
-    """Xử lý link sản phẩm Lazada: lấy thông tin chi tiết và hiển thị nút chọn phân loại"""
+    """Xử lý link sản phẩm Lazada: lấy thông tin chi tiết và hiển thị chọn từng lớp phân loại"""
     auto_register_user(update)
     msg = update.effective_message
     if not msg:
         return
 
-    status_msg = await msg.reply_text("🔍 Đang đọc thông tin sản phẩm và các phân loại từ Lazada...")
+    status_msg = await msg.reply_text("🔍 Đang tải thông tin sản phẩm và phân loại từ Lazada...")
 
     loop = asyncio.get_running_loop()
     details = await loop.run_in_executor(None, lambda: fetch_product_details(url, headless=True))
@@ -238,56 +304,27 @@ async def handle_lazada_product_link(update: Update, context: ContextTypes.DEFAU
     title = details.get("title") or "Sản phẩm Lazada"
     price = details.get("price") or "N/A"
     orig_price = details.get("original_price")
-    variations = details.get("variations") or []
+    layers = details.get("layers") or []
     prod_url = details.get("url") or url
 
-    # Lưu thông tin phiên chọn vào context.user_data
-    context.user_data["add_cart_session"] = {
+    # Khởi tạo phiên chọn sản phẩm trong context
+    session = {
         "url": prod_url,
         "title": title,
         "price": price,
-        "variations": variations
+        "orig_price": orig_price,
+        "layers": layers,
+        "current_step": 0,
+        "chosen_options": []
     }
+    context.user_data["add_cart_session"] = session
 
-    price_line = f"💰 <b>Giá:</b> <code>{price}</code>"
-    if orig_price and orig_price != price:
-        price_line += f" <s>{orig_price}</s>"
-
-    header_text = (
-        f"🛍️ <b>THÔNG TIN SẢN PHẨM:</b>\n\n"
-        f"📦 <b>{title}</b>\n"
-        f"{price_line}\n"
-    )
-
-    if variations:
-        guide_text = header_text + f"\n👉 <b>Vui lòng bấm chọn Phân loại (SKU) để thêm vào giỏ:</b>"
-        keyboard = []
-        row = []
-        for idx, v in enumerate(variations):
-            btn_text = v["name"]
-            if v.get("selected"):
-                btn_text = f"🔘 {btn_text}"
-            row.append(InlineKeyboardButton(text=btn_text, callback_data=f"addcart:{idx}"))
-            if len(row) == 2:
-                keyboard.append(row)
-                row = []
-        if row:
-            keyboard.append(row)
-        keyboard.append([InlineKeyboardButton(text="❌ Hủy bỏ", callback_data="addcart:cancel")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await status_msg.edit_text(guide_text, parse_mode="HTML", reply_markup=reply_markup)
-    else:
-        guide_text = header_text + f"\n<i>(Sản phẩm này có 1 phân loại mặc định)</i>"
-        keyboard = [
-            [InlineKeyboardButton(text="🛒 Thêm vào giỏ hàng ngay", callback_data="addcart:default")],
-            [InlineKeyboardButton(text="❌ Hủy bỏ", callback_data="addcart:cancel")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await status_msg.edit_text(guide_text, parse_mode="HTML", reply_markup=reply_markup)
+    text, markup = _render_product_selection(session)
+    await status_msg.edit_text(text, parse_mode="HTML", reply_markup=markup)
 
 
 async def handle_add_cart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Xử lý khi người dùng bấm nút chọn phân loại để thêm vào giỏ"""
+    """Xử lý điều hướng khi người dùng chọn từng lớp phân loại để thêm vào giỏ"""
     query = update.callback_query
     if not query:
         return
@@ -299,47 +336,72 @@ async def handle_add_cart_callback(update: Update, context: ContextTypes.DEFAULT
 
     action = data.split(":", 1)[1]
     if action == "cancel":
-        await query.edit_message_text("❌ Đã hủy thao tác thêm vào giỏ hàng.")
+        await query.edit_message_text("❌ Đã hủy thao tác thêm sản phẩm.")
         context.user_data.pop("add_cart_session", None)
         return
 
     session = context.user_data.get("add_cart_session")
     if not session:
-        await query.edit_message_text("⚠️ Phiên chọn sản phẩm đã hết hạn. Vui lòng gửi lại link sản phẩm.")
+        await query.edit_message_text("⚠️ Phiên chọn đã hết hạn. Vui lòng gửi lại link sản phẩm.")
         return
 
+    layers = session.get("layers", [])
+    current_step = session.get("current_step", 0)
+    chosen_options = session.get("chosen_options", [])
+
+    if action == "back":
+        if current_step > 0:
+            session["current_step"] -= 1
+            if session["chosen_options"]:
+                session["chosen_options"].pop()
+        text, markup = _render_product_selection(session)
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if action.startswith("step:"):
+        # addcart:step:<layer_idx>:<opt_idx>
+        parts = action.split(":")
+        layer_idx = int(parts[1])
+        opt_idx = int(parts[2])
+
+        if layer_idx < len(layers):
+            chosen_opt = layers[layer_idx]["options"][opt_idx]["name"]
+            chosen_options.append(chosen_opt)
+            session["chosen_options"] = chosen_options
+            session["current_step"] = layer_idx + 1
+
+        # Nếu còn lớp phân loại tiếp theo -> render bước kế tiếp
+        if session["current_step"] < len(layers):
+            text, markup = _render_product_selection(session)
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+            return
+
+    # Khi đã chọn đủ tất cả các lớp phân loại (hoặc action == 'default')
     url = session.get("url")
     title = session.get("title")
     price = session.get("price")
-    variations = session.get("variations") or []
+    chosen = session.get("chosen_options", [])
+    sku_display = " / ".join(chosen) if chosen else ""
+    sku_text = f" [<b>{sku_display}</b>]" if sku_display else ""
 
-    sku_name = None
-    if action.isdigit():
-        idx = int(action)
-        if 0 <= idx < len(variations):
-            sku_name = variations[idx]["name"]
-    elif action == "default":
-        sku_name = None
-
-    sku_display = f" <i>[Phân loại: <b>{sku_name}</b>]</i>" if sku_name else ""
-    await query.edit_message_text(f"⏳ Đang thêm{sku_display} vào giỏ hàng Lazada của bạn...", parse_mode="HTML")
+    await query.edit_message_text(f"⏳ Đang thêm{sku_text} vào giỏ hàng Lazada...", parse_mode="HTML")
 
     loop = asyncio.get_running_loop()
-    res = await loop.run_in_executor(None, lambda: add_sku_to_cart(url, sku_name, headless=True))
+    res = await loop.run_in_executor(None, lambda: add_sku_to_cart(url, chosen, headless=True))
 
     if res.get("status") == "ok":
-        success_text = (
-            f"✅ <b>ĐÃ THÊM THÀNH CÔNG VÀO GIỎ HÀNG LAZADA!</b> 🎉\n\n"
+        msg_text = (
+            f"✅ <b>ĐÃ THÊM VÀO GIỎ HÀNG THÀNH CÔNG!</b>\n\n"
             f"📦 <b>Sản phẩm:</b> {title}\n"
         )
-        if sku_name:
-            success_text += f"🏷️ <b>Phân loại:</b> <b>{sku_name}</b>\n"
+        if sku_display:
+            msg_text += f"🏷️ <b>Phân loại:</b> <code>{sku_display}</code>\n"
         if price:
-            success_text += f"💰 <b>Giá:</b> <code>{price}</code>\n"
-        success_text += "\n👉 Gõ <code>/cart</code> để xem toàn bộ giỏ hàng và kiểm tra giá sau Voucher ngay!"
-        await query.edit_message_text(success_text, parse_mode="HTML")
+            msg_text += f"💰 <b>Giá:</b> <code>{price}</code>\n"
+        msg_text += "\n👉 Gõ <code>/cart</code> để xem giỏ hàng và giá sau voucher."
+        await query.edit_message_text(msg_text, parse_mode="HTML")
     else:
-        err_msg = res.get("message", "Lỗi không xác định khi thêm vào giỏ.")
+        err_msg = res.get("message", "Lỗi thao tác.")
         await query.edit_message_text(f"❌ {err_msg}")
 
     context.user_data.pop("add_cart_session", None)
@@ -460,6 +522,10 @@ async def cart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     dashboard.set_cookie_status(True)
     products = result["products"]
     summary = result.get("summary", {})
+    try:
+        products = database.save_cart_to_db(products, summary)
+    except Exception as e:
+        logger.error(f"Lỗi lưu SQLite: {e}")
     dashboard.update_cart(products, summary)
 
     dur = result.get("duration", 0.0)
@@ -527,7 +593,7 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def setprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Cài đặt mức giá mục tiêu: chỉ gửi thông báo khi giá <= mức này"""
+    """Cài đặt mức Giá đáy: chỉ gửi thông báo khi giá <= mức này"""
     auto_register_user(update)
     msg = update.effective_message
     if not msg:
@@ -535,35 +601,34 @@ async def setprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     args = context.args or []
     if len(args) < 2:
-        history = load_price_history()
-        prods = history.get("products", {})
+        cart_items = database.get_cart_items_db(valid_only=True)
 
         guide_lines = [
-            "🎯 <b>HƯỚNG DẪN ĐẶT MỨC GIÁ MỤC TIÊU:</b>\n",
-            "Bot sẽ <b>CHỈ gửi thông báo</b> khi giá sản phẩm giảm xuống <b>thấp hơn hoặc bằng (≤)</b> mức giá bạn đặt.",
-            "<i>(Các sản phẩm không cài giá mục tiêu vẫn thông báo biến động như bình thường)</i>\n",
-            "👉 <b>Cú pháp:</b> <code>/setprice &lt;STT hoặc Tên&gt; &lt;Mức giá&gt;</code>",
+            "🎯 <b>CÀI ĐẶT GIÁ ĐÁY</b>\n",
+            "Bot chỉ gửi thông báo khi giá sản phẩm giảm xuống <b>≤ mức giá đáy</b> bạn đặt.\n",
+            "👉 <b>Cú pháp:</b> <code>/setprice &lt;STT hoặc Tên&gt; &lt;Giá đáy&gt;</code>",
             "Ví dụ:",
             "• <code>/setprice 1 100k</code> (chỉ báo khi SP #1 giảm ≤ 100.000₫)",
             "• <code>/setprice 2 45.000</code>",
-            "• <code>/setprice ugreen 50k</code> (tìm theo từ khóa)\n",
+            "• <code>/setprice ugreen 50k</code>\n",
         ]
 
-        if prods:
-            guide_lines.append("📋 <b>Danh sách sản phẩm trong giỏ hàng:</b>")
-            for idx, (pid, p) in enumerate(prods.items(), 1):
+        if cart_items:
+            guide_lines.append("📋 <b>Danh sách sản phẩm trong giỏ:</b>")
+            for p in cart_items:
+                idx = p["stt"]
                 p_name = p.get("name", "Sản phẩm")[:40]
                 sku = p.get("sku", "")
                 p_sku = f" [{sku[:20]}]" if sku else ""
-                cur_p = p.get("current_price")
+                cur_p = p.get("price")
                 cur_str = f"{cur_p:,.0f}₫" if cur_p else "N/A"
 
-                target = get_target_price(pid)
-                target_str = f" ➔ 🎯 Mục tiêu: <b>≤ {target:,.0f}₫</b>" if target else ""
+                target = get_target_price(p["pid"])
+                target_str = f" ➔ 🎯 Giá đáy: <b>≤ {target:,.0f}₫</b>" if target else ""
                 guide_lines.append(f"<b>{idx}.</b> {p_name}{p_sku} - <code>{cur_str}</code>{target_str}")
-            guide_lines.append("\n👉 Gõ <code>/setprice &lt;STT&gt; &lt;giá&gt;</code> để cài đặt ngay.")
+            guide_lines.append("\n👉 Gõ <code>/setprice &lt;STT&gt; &lt;giá&gt;</code> để cài đặt.")
         else:
-            guide_lines.append("ℹ️ <i>Chưa có dữ liệu giỏ hàng. Hãy gửi /cart trước để bot quét sản phẩm.</i>")
+            guide_lines.append("ℹ️ <i>Chưa có dữ liệu giỏ hàng. Gõ /cart để quét giỏ hàng trước.</i>")
 
         await msg.reply_html("\n".join(guide_lines))
         return
@@ -583,7 +648,7 @@ async def setprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not matched:
         await msg.reply_html(
             f"❌ Không tìm thấy sản phẩm nào khớp với: <code>{query}</code>\n"
-            f"👉 Hãy gõ <code>/cart</code> hoặc <code>/setprice</code> để xem danh sách STT."
+            f"👉 Gõ <code>/cart</code> để xem danh sách STT chuẩn xác."
         )
         return
 
@@ -596,21 +661,17 @@ async def setprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     sku_text = f"🏷️ <i>Phân loại: <b>{sku}</b></i>\n" if sku else ""
     await msg.reply_html(
-        f"🎯 <b>ĐÃ ĐẶT MỨC GIÁ MỤC TIÊU THÀNH CÔNG!</b>\n\n"
+        f"🎯 <b>ĐÃ CÀI ĐẶT GIÁ ĐÁY THÀNH CÔNG!</b>\n\n"
         f"📦 <b>Sản phẩm #{idx}:</b> {name[:60]}\n"
         f"{sku_text}"
         f"💰 Giá hiện tại: <code>{curr_p:,.0f}₫</code>\n"
-        f"🎯 Giá mục tiêu: <b>≤ {target_val:,.0f}₫</b>\n\n"
-        f"🔔 <b>Quy tắc thông báo:</b>\n"
-        f"• Bot sẽ <b>CHỈ gửi thông báo</b> khi giá sản phẩm này giảm xuống <b>≤ {target_val:,.0f}₫</b>.\n"
-        f"• Nếu giá thay đổi nhưng vẫn > {target_val:,.0f}₫, bot sẽ bỏ qua thông báo.\n"
-        f"• Các sản phẩm khác trong giỏ vẫn thông báo như bình thường.\n\n"
+        f"🎯 Giá đáy nhận cảnh báo: <b>≤ {target_val:,.0f}₫</b>\n\n"
         f"👉 Gõ <code>/targets</code> để xem danh sách đang theo dõi."
     )
 
 
 async def delprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Xóa mức giá mục tiêu: quay lại thông báo biến động bình thường"""
+    """Xóa mức Giá đáy của sản phẩm"""
     auto_register_user(update)
     msg = update.effective_message
     if not msg:
@@ -619,78 +680,70 @@ async def delprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     args = context.args or []
     if not args:
         await msg.reply_html(
-            "👉 <b>Cú pháp xóa giá mục tiêu:</b>\n"
-            "• <code>/delprice &lt;STT hoặc tên&gt;</code> (VD: <code>/delprice 1</code>)\n"
-            "• <code>/delprice all</code> (Xóa toàn bộ mức giá mục tiêu đã đặt)"
+            "👉 <b>Cú pháp xóa giá đáy:</b>\n"
+            "• <code>/delprice &lt;STT hoặc Tên&gt;</code> (VD: <code>/delprice 1</code>)\n"
+            "• <code>/delprice all</code> (Xóa toàn bộ giá đáy)"
         )
         return
 
     query = " ".join(args).strip()
     if query.lower() in ("all", "tat ca", "tất cả"):
         count = clear_all_target_prices()
-        await msg.reply_html(f"✅ <b>Đã xóa toàn bộ {count} mức giá mục tiêu!</b>\nTừ giờ bot sẽ thông báo mọi biến động giá cho tất cả sản phẩm.")
+        await msg.reply_html(f"✅ Đã xóa toàn bộ <b>{count}</b> mức giá đáy.")
         return
 
     matched = find_product_by_query(query)
     if not matched:
-        await msg.reply_html(f"❌ Không tìm thấy sản phẩm nào khớp với: <code>{query}</code>")
+        await msg.reply_html(f"❌ Không tìm thấy sản phẩm khớp với: <code>{query}</code>")
         return
 
     pid, p_data, idx = matched
     if remove_target_price(pid):
         name = p_data.get("name", "Sản phẩm")[:60]
-        await msg.reply_html(
-            f"✅ <b>Đã xóa mức giá mục tiêu cho SP #{idx}:</b> {name}\n\n"
-            f"🔔 Sản phẩm này sẽ nhận thông báo mọi biến động giá như bình thường."
-        )
+        await msg.reply_html(f"✅ Đã xóa giá đáy cho <b>SP #{idx}:</b> {name}")
     else:
-        await msg.reply_text("ℹ️ Sản phẩm này trước đó chưa cài đặt mức giá mục tiêu.")
+        await msg.reply_text("ℹ️ Sản phẩm này chưa cài đặt giá đáy.")
 
 
 async def targets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Xem danh sách các sản phẩm đang được cài đặt mức giá mục tiêu"""
+    """Xem danh sách các sản phẩm đang cài đặt Giá đáy"""
     auto_register_user(update)
     msg = update.effective_message
     if not msg:
         return
 
-    targets = get_all_target_prices()
+    targets = database.get_all_target_prices_db()
     if not targets:
         await msg.reply_html(
-            "ℹ️ <b>Hiện chưa có sản phẩm nào được cài đặt mức giá mục tiêu.</b>\n\n"
-            "Tất cả sản phẩm trong giỏ hàng đang được theo dõi và gửi thông báo khi có bất kỳ biến động nào.\n\n"
-            "👉 Để cài mức giá mong muốn: <code>/setprice &lt;STT&gt; &lt;giá&gt;</code> (VD: <code>/setprice 1 100k</code>)"
+            "ℹ️ <b>Chưa có sản phẩm nào được cài đặt giá đáy.</b>\n\n"
+            "👉 Đặt giá đáy: <code>/setprice &lt;STT&gt; &lt;giá&gt;</code> (VD: <code>/setprice 1 100k</code>)"
         )
         return
 
-    history = load_price_history()
-    hist_prods = history.get("products", {})
-
-    lines = ["🎯 <b>DANH SÁCH GIÁ MỤC TIÊU ĐANG THEO DÕI:</b>\n"]
-    for idx, (pid, data) in enumerate(targets.items(), 1):
-        name = data.get("name", "Sản phẩm")[:55]
-        sku = data.get("sku", "")
+    lines = ["🎯 <b>DANH SÁCH GIÁ ĐÁY ĐANG THEO DÕI:</b>\n"]
+    for row in targets:
+        idx = row.get("stt") or "?"
+        name = row.get("name", "Sản phẩm")[:55]
+        sku = row.get("sku", "")
         sku_str = f"   🏷️ <i>Phân loại: {sku}</i>\n" if sku else ""
-        target_p = data.get("target_price", 0)
-
-        hist_p = hist_prods.get(pid, {})
-        curr_p = hist_p.get("current_price")
+        target_p = row.get("target_price", 0)
+        curr_p = row.get("current_price")
         curr_str = f"{curr_p:,.0f}₫" if curr_p else "N/A"
 
         if curr_p and curr_p <= target_p:
             status_tag = "🎉 <b>ĐÃ ĐẠT!</b>"
         else:
             diff = curr_p - target_p if curr_p else 0
-            status_tag = f"⏳ <i>Cần giảm thêm {diff:,.0f}₫</i>" if diff > 0 else "⏳ <i>Đang chờ...</i>"
+            status_tag = f"<i>Cần giảm thêm {diff:,.0f}₫</i>" if diff > 0 else "<i>Đang chờ</i>"
 
         lines.append(
-            f"<b>{idx}. {name}</b>\n"
+            f"<b>#{idx}. {name}</b>\n"
             f"{sku_str}"
-            f"   🎯 Mục tiêu: <b>≤ {target_p:,.0f}₫</b>\n"
+            f"   🎯 Giá đáy: <b>≤ {target_p:,.0f}₫</b>\n"
             f"   💰 Hiện tại: <code>{curr_str}</code> ({status_tag})\n"
         )
 
-    lines.append("👉 Xóa mục tiêu: <code>/delprice &lt;STT&gt;</code> hoặc <code>/delprice all</code>")
+    lines.append("👉 Xóa giá đáy: <code>/delprice &lt;STT&gt;</code> hoặc <code>/delprice all</code>")
     await msg.reply_html("\n".join(lines))
 
 

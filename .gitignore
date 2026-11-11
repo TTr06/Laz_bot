@@ -11,6 +11,10 @@ cookie_input.json
 price_history.json
 subscribers.json
 target_prices.json
+*.db
+*.db-wal
+*.db-shm
+*.apk
 
 # Browser profile & cache
 chrome_profile/
