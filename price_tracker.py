@@ -588,7 +588,7 @@ def format_cart_messages(products: List[dict], summary: dict) -> List[str]:
             current_lines.append(inv_block)
             current_char_count += len(inv_block) + 2
 
-    footer = "💡 <i>Đặt giá đáy nhận cảnh báo: <code>/setprice &lt;STT&gt; &lt;giá&gt;</code></i>"
+    footer = "💡 <i>Mẹo: Nhắn nhanh <b>&lt;STT&gt; &lt;giá&gt;</b> (VD: <code>1 100k</code>, <code>2 50k</code>) để đặt giá đáy tức thì!</i>"
     if current_char_count + len(footer) > 3700:
         messages.append("\n\n".join(current_lines))
         current_lines = [footer]

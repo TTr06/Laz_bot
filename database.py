@@ -369,16 +369,39 @@ def parse_user_price(text: str) -> Optional[float]:
     """
     Chuyển đổi chuỗi nhập giá của người dùng thành số thực:
     - 100k, 100K -> 100000
-    - 1.5tr, 1,5m, 2tr -> 1500000, 2000000
+    - 1tr5, 2tr2 -> 1500000, 2200000
+    - 1.5tr, 1,5m, 2tr, 2 triệu -> 1500000, 2000000
+    - 1k5, 2k2 -> 1500, 2200
+    - 100 ngàn, 100 nghìn, 100 ngan -> 100000
     - 100.000, 100,000, 100000 -> 100000
     - 85 -> 85000 (nếu số < 1000 thì quy ước nghìn)
+    - 0, off, del, xoa -> 0.0 (tín hiệu xóa)
     """
     if not text:
         return None
     cleaned = text.strip().lower()
     cleaned = cleaned.replace("₫", "").replace("đ", "").replace("vnd", "").strip()
 
-    # Triệu: 1.5tr, 1.5m, 2tr
+    if cleaned in ("0", "off", "del", "xoa", "xóa", "huy", "hủy"):
+        return 0.0
+
+    # Phối hợp triệu: 1tr5, 2tr25, 1m5
+    m_split_tr = re.match(r'^(\d+)\s*(?:tr|trieu|triệu|m)\s*(\d+)$', cleaned)
+    if m_split_tr:
+        try:
+            return float(f"{m_split_tr.group(1)}.{m_split_tr.group(2)}") * 1_000_000
+        except ValueError:
+            pass
+
+    # Phối hợp nghìn: 1k5, 2k2
+    m_split_k = re.match(r'^(\d+)\s*k\s*(\d+)$', cleaned)
+    if m_split_k:
+        try:
+            return float(f"{m_split_k.group(1)}.{m_split_k.group(2)}") * 1_000
+        except ValueError:
+            pass
+
+    # Triệu: 1.5tr, 1,5m, 2tr, 2 triệu
     m_tr = re.match(r'^([\d.,]+)\s*(?:tr|trieu|triệu|m)$', cleaned)
     if m_tr:
         num_str = m_tr.group(1).replace(",", ".")
@@ -387,8 +410,8 @@ def parse_user_price(text: str) -> Optional[float]:
         except ValueError:
             pass
 
-    # Nghìn: 100k, 150.5k
-    m_k = re.match(r'^([\d.,]+)\s*k$', cleaned)
+    # Nghìn: 100k, 150.5k, 100 ngàn, 100 nghìn
+    m_k = re.match(r'^([\d.,]+)\s*(?:k|ngàn|nghìn|ngan|nghin)$', cleaned)
     if m_k:
         num_str = m_k.group(1).replace(",", ".")
         try:
@@ -396,18 +419,194 @@ def parse_user_price(text: str) -> Optional[float]:
         except ValueError:
             pass
 
-    # Số thông thường: 100.000, 100000, 100,000
-    num_clean = re.sub(r'[^\d]', '', cleaned)
-    if num_clean:
-        try:
-            val = float(num_clean)
-            if 0 < val < 1000 and "k" not in cleaned:
-                val = val * 1000
-            return val
-        except ValueError:
-            pass
+    # Số thông thường: 100.000, 100,000, 100000 hoặc số trần (85 -> 85000)
+    m_plain = re.match(r'^([\d.,]+)$', cleaned)
+    if m_plain:
+        raw_num = m_plain.group(1)
+        num_clean = re.sub(r'[^\d]', '', raw_num)
+        if num_clean:
+            try:
+                val = float(num_clean)
+                if 0 < val < 1000 and "." not in raw_num and "," not in raw_num:
+                    val = val * 1000
+                return val
+            except ValueError:
+                pass
 
     return None
+
+
+def parse_quick_del_input(text: str) -> Optional[Tuple[str, Optional[str]]]:
+    """
+    Nhận diện lệnh xóa giá đáy nhanh:
+    - 'xoa all', 'del all', 'xóa all', 'xoa tat ca', 'xóa tất cả' -> ('ALL', None)
+    - 'xoa 1', 'del 1', 'xóa 1', 'del #1', 'xoa sp 1', 'xoa stt 1' -> ('SINGLE', '1')
+    - '1 0', '1 off', '1 xoa', '1 xóa', '1 del' -> ('SINGLE', '1')
+    - 'xoa ugreen' -> ('SINGLE', 'ugreen')
+    """
+    raw = text.strip()
+    if not raw or len(raw) > 100 or "\n" in raw:
+        return None
+
+    cleaned = raw.lower()
+
+    # 1. Xóa toàn bộ
+    all_pattern = r'^(?:xoa|xóa|del|clear|huy|hủy)\s+(?:all|tat\s*ca|tất\s*cả|toan\s*bo|toàn\s*bộ)$'
+    if re.match(all_pattern, cleaned):
+        return ("ALL", None)
+
+    # 2. Xóa theo tiền tố: xoa 1, del #2, xóa sp 3, xoa ugreen
+    m_del_prefix = re.match(r'^(?:xoa|xóa|del|clear|huy|hủy|remove)\s+(?:sp\s*|stt\s*|#)?(.+)$', cleaned)
+    if m_del_prefix:
+        target_query = m_del_prefix.group(1).strip()
+        if target_query:
+            return ("SINGLE", target_query)
+
+    # 3. Hậu tố xóa: '1 0', '1 off', 'sp 1 0', '#1: 0', '2 xoa', '1=off'
+    m_suffix = re.match(r'^(?:sp\s*|stt\s*|#)?(\d+)\s*(?:[:=-]\s*)?(?:0|off|xoa|xóa|del|huy|hủy|none)$', cleaned)
+    if m_suffix:
+        return ("SINGLE", m_suffix.group(1).strip())
+
+    return None
+
+
+def _parse_single_quick_set_line(raw: str) -> Optional[Tuple[str, float, bool]]:
+    """
+    Phân tích 1 dòng hoặc 1 mệnh đề đặt giá nhanh.
+    Trả về (query_str, target_price, is_explicit) nếu hợp lệ.
+    """
+    if not raw or "\n" in raw:
+        return None
+    s = raw.strip()
+
+    # Bỏ qua nếu là lệnh slash hoặc chuỗi URL
+    if s.startswith("/") and not re.match(r'^/setprice\b', s, flags=re.IGNORECASE):
+        return None
+    if "http://" in s or "https://" in s:
+        return None
+
+    # Kiểm tra tiền tố chỉ định rõ ràng: set, setprice, cài, giá đáy...
+    is_explicit = False
+    prefix_pattern = r'^(?:(?:/)?(?:setprice|set|cài\s*đặt|cai\s*dat|cài|cai|giá\s*đáy|gia\s*day|giá|gia|đáy|day))\s+'
+    m_pref = re.match(prefix_pattern, s, flags=re.IGNORECASE)
+    if m_pref:
+        is_explicit = True
+        s = s[m_pref.end():].strip()
+
+    # Kiểm tra dấu phân cách rõ ràng: ':', '=', '->', '=>', hoặc '-' (chỉ khi có khoảng trắng xung quanh hoặc dạng stt-gia)
+    m_delim = re.split(r'\s*(?:[:=]|->|=>)\s*', s, maxsplit=1)
+    if len(m_delim) == 2 and m_delim[0].strip() and m_delim[1].strip():
+        cand_query, cand_price = m_delim[0].strip(), m_delim[1].strip()
+        price_val = parse_user_price(cand_price)
+        if price_val is not None and price_val > 0:
+            q_clean = re.sub(r'^(?:sp\s*|stt\s*|#)\s*', '', cand_query, flags=re.IGNORECASE).strip()
+            return (q_clean or cand_query, price_val, True)
+
+    # Thử phân cách bằng dấu gạch ngang: '1 - 100k', '1-100k'
+    m_dash = re.match(r'^(?:sp\s*|stt\s*|#)?(\d+)\s*-\s*(.+)$', s, flags=re.IGNORECASE)
+    if m_dash:
+        cand_query, cand_price = m_dash.group(1).strip(), m_dash.group(2).strip()
+        price_val = parse_user_price(cand_price)
+        if price_val is not None and price_val > 0:
+            return (cand_query, price_val, True)
+
+    # Tách từ theo khoảng trắng
+    tokens = s.split()
+    if len(tokens) < 2:
+        return None
+
+    # Thử 2 từ cuối làm giá (ví dụ: '1.5 triệu', '150 ngàn') - chỉ khi từ cuối là đơn vị tiền tệ
+    price_val = None
+    query_str = None
+    PRICE_UNITS = ("tr", "trieu", "triệu", "m", "k", "ngàn", "nghìn", "ngan", "nghin", "vnd", "đ")
+    if len(tokens) >= 3 and tokens[-1].lower() in PRICE_UNITS:
+        cand_p2 = f"{tokens[-2]} {tokens[-1]}"
+        p2 = parse_user_price(cand_p2)
+        if p2 is not None and p2 > 0:
+            price_val = p2
+            query_str = " ".join(tokens[:-2])
+
+    # Nếu không được, thử 1 từ cuối làm giá (ví dụ: '100k', '45k', '1tr5', '200.000')
+    if price_val is None:
+        cand_p1 = tokens[-1]
+        p1 = parse_user_price(cand_p1)
+        if p1 is not None and p1 > 0:
+            price_val = p1
+            query_str = " ".join(tokens[:-1])
+
+    if price_val is None or not query_str:
+        return None
+
+    # Làm sạch query nếu có tiền tố sp, stt, #
+    m_sp = re.match(r'^(?:sp\s*|stt\s*|#)\s*(.*)$', query_str, flags=re.IGNORECASE)
+    if m_sp:
+        is_explicit = True
+        query_str = m_sp.group(1).strip() or query_str
+
+    if query_str.isdigit():
+        is_explicit = True
+
+    return (query_str, price_val, is_explicit)
+
+
+def parse_quick_setprice_input(text: str) -> Tuple[List[Tuple[Dict[str, Any], float]], List[str]]:
+    """
+    Phân tích chuỗi tin nhắn đặt giá nhanh (hỗ trợ cả đơn lẻ và hàng loạt):
+    - Đơn lẻ: '1 100k', '#2 45k', 'sp1: 1.5tr', 'ugreen 50k'
+    - Hàng loạt nhiều dòng:
+        1 100k
+        2 50k
+        3 1.5tr
+    - Hàng loạt ngăn cách bởi dấu phẩy/chấm phẩy:
+        1 100k, 2 50k, 3 1.5tr
+
+    Trả về:
+    (matched_items, unmatched_queries)
+    - matched_items: Danh sách tuple (product_dict, target_price)
+    - unmatched_queries: Danh sách các truy vấn tường minh nhưng không tìm thấy SP
+    """
+    if not text:
+        return [], []
+
+    raw_text = text.strip()
+    batch_delim_pattern = r'[,;]\s*(?=(?:(?:sp\s*|stt\s*|#)\s*\d+|\d+\s*[:=\s-]|[a-zA-Z0-9_\u00C0-\u024F\u1EA0-\u1EF9]+\s*[:=]))'
+
+    # Phân tách dòng hoặc danh sách hàng loạt
+    if "\n" in raw_text:
+        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    elif re.search(batch_delim_pattern, raw_text, flags=re.IGNORECASE):
+        lines = [part.strip() for part in re.split(batch_delim_pattern, raw_text, flags=re.IGNORECASE) if part.strip()]
+    else:
+        # Xử lý đơn lẻ
+        single_res = _parse_single_quick_set_line(raw_text)
+        if single_res:
+            q_str, p_val, is_exp = single_res
+            prod = find_product_by_stt_or_query(q_str)
+            if prod:
+                return [(prod, p_val)], []
+            elif is_exp:
+                return [], [q_str]
+        return [], []
+
+    matched_items: List[Tuple[Dict[str, Any], float]] = []
+    unmatched_queries: List[str] = []
+    seen_pids = set()
+
+    for line in lines:
+        parsed = _parse_single_quick_set_line(line)
+        if not parsed:
+            continue
+        q_str, p_val, is_exp = parsed
+        prod = find_product_by_stt_or_query(q_str)
+        if prod:
+            pid = prod["pid"]
+            if pid not in seen_pids:
+                seen_pids.add(pid)
+                matched_items.append((prod, p_val))
+        elif is_exp:
+            unmatched_queries.append(q_str)
+
+    return matched_items, unmatched_queries
 
 
 def set_target_price_db(pid: str, name: str, sku: str, target_price: float, url: str = "") -> Dict[str, Any]:

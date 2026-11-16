@@ -12,6 +12,14 @@ def parse_user_price(text: str) -> Optional[float]:
     return database.parse_user_price(text)
 
 
+def parse_quick_setprice_input(text: str):
+    return database.parse_quick_setprice_input(text)
+
+
+def parse_quick_del_input(text: str):
+    return database.parse_quick_del_input(text)
+
+
 def load_target_prices() -> Dict[str, Dict[str, Any]]:
     items = database.get_all_target_prices_db()
     result = {}

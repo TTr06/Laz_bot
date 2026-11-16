@@ -122,9 +122,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• <code>/prices</code> : Xem danh sách giá các mặt hàng đã lưu\n"
         "• <code>/add &lt;link&gt;</code> : Thêm sản phẩm vào giỏ hàng\n\n"
         "🎯 <b>Cài đặt Giá đáy (Săn sale):</b>\n"
-        "• <code>/setprice &lt;STT&gt; &lt;giá&gt;</code> : Đặt giá đáy (VD: <code>/setprice 1 100k</code>)\n"
-        "• <code>/targets</code> : Xem danh sách các mặt hàng đang cài giá đáy\n"
-        "• <code>/delprice &lt;STT&gt;</code> : Xóa giá đáy (quay lại báo mọi biến động)\n\n"
+        "• <b>Nhắn nhanh vào chat:</b> <code>1 100k</code>, <code>2 50k</code>, <code>1 1tr5</code>\n"
+        "• Đặt nhiều SP: <code>1 100k, 2 50k</code> (hoặc gửi nhiều dòng)\n"
+        "• Xóa nhanh: <code>xoa 1</code> hoặc <code>1 0</code> (xóa hết: <code>xoa all</code>)\n"
+        "• Lệnh gốc: <code>/setprice &lt;STT&gt; &lt;giá&gt;</code> | <code>/delprice &lt;STT&gt;</code>\n"
+        "• <code>/targets</code> : Xem danh sách các mặt hàng đang cài giá đáy\n\n"
         "⏰ <b>Tự động quét ngầm:</b>\n"
         "• <code>/schedule</code> : Tình trạng lịch quét ngầm\n"
         "• <code>/auto_on</code> / <code>/auto_off</code> : Bật / tắt quét ngầm\n\n"
@@ -465,6 +467,103 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"👉 Hãy gõ <code>/cart</code> để kiểm tra giỏ hàng ngay!"
             )
             return
+
+    # 3. Lệnh xóa giá đáy nhanh: xoa 1, del 1, 1 0, 1 off, xoa all
+    quick_del = database.parse_quick_del_input(text)
+    if quick_del:
+        action_type, query = quick_del
+        if action_type == "ALL":
+            count = database.clear_all_target_prices_db()
+            await msg.reply_html(
+                f"🗑️ <b>Đã xóa toàn bộ giá đáy ({count} sản phẩm).</b>\n"
+                f"<i>Tất cả sản phẩm trong giỏ sẽ nhận thông báo khi có bất kỳ thay đổi giá nào.</i>"
+            )
+            return
+        elif action_type == "SINGLE" and query:
+            matched = database.find_product_by_stt_or_query(query)
+            if matched:
+                database.remove_target_price_db(matched["pid"])
+                stt = matched["stt"]
+                name = matched["name"][:55]
+                await msg.reply_html(
+                    f"🗑️ <b>Đã hủy giá đáy cho SP #{stt}:</b> {name}\n"
+                    f"<i>Sản phẩm này sẽ quay lại nhận thông báo cho mọi biến động giá.</i>"
+                )
+                return
+            else:
+                if query.isdigit():
+                    await msg.reply_html(
+                        f"❌ <b>Không tìm thấy sản phẩm #{query} trong giỏ hàng.</b>\n"
+                        f"👉 Gõ <code>/cart</code> để xem danh sách STT chuẩn xác."
+                    )
+                else:
+                    await msg.reply_html(f"❌ Không tìm thấy sản phẩm khớp với: <code>{query}</code>")
+                return
+
+    # 4. Hướng dẫn nhanh nếu nhắn từ khóa cài giá
+    if text.lower() in ("setprice", "/setprice", "gia day", "giá đáy", "cai gia", "cài giá"):
+        await msg.reply_html(
+            "💡 <b>CÁCH ĐẶT GIÁ ĐÁY NHANH:</b>\n\n"
+            "Nhắn trực tiếp vào chat: <b>&lt;STT&gt; &lt;giá&gt;</b>\n"
+            "• <code>1 100k</code> (đặt SP #1 giá đáy 100.000₫)\n"
+            "• <code>2 45k</code>, <code>3 1.5tr</code>, <code>4 1tr5</code>\n"
+            "• Đặt nhiều SP cùng lúc: <code>1 100k, 2 50k, 3 200k</code>\n"
+            "• Xóa giá đáy: <code>xoa 1</code> hoặc <code>1 0</code>\n\n"
+            "👉 Gõ <code>/cart</code> để xem danh sách số thứ tự (STT)."
+        )
+        return
+
+    # 5. Cài đặt giá đáy nhanh qua tin nhắn (đơn lẻ hoặc hàng loạt)
+    matched_items, unmatched_queries = database.parse_quick_setprice_input(text)
+    if matched_items:
+        for p_data, target_val in matched_items:
+            database.set_target_price_db(
+                p_data["pid"],
+                p_data["name"],
+                p_data.get("sku", ""),
+                target_val,
+                p_data.get("url", "")
+            )
+
+        if len(matched_items) == 1:
+            p, target_val = matched_items[0]
+            stt = p["stt"]
+            name = p["name"]
+            sku = p.get("sku", "")
+            cur_price = p.get("price") or 0
+            sku_line = f"🏷️ <i>Phân loại: <b>{sku}</b></i>\n" if sku else ""
+            unmatched_hint = f"\n⚠️ <i>Không tìm thấy: {', '.join(unmatched_queries)}</i>" if unmatched_queries else ""
+
+            await msg.reply_html(
+                f"🎯 <b>Đã cài giá đáy cho SP #{stt}</b>\n\n"
+                f"📦 <b>{name[:60]}</b>\n"
+                f"{sku_line}"
+                f"💰 Giá hiện tại: <code>{cur_price:,.0f}₫</code>\n"
+                f"🎯 Giá đáy nhận cảnh báo: <b>≤ {target_val:,.0f}₫</b>\n\n"
+                f"<i>Bot chỉ gửi thông báo khi giá giảm xuống ≤ {target_val:,.0f}₫.</i>"
+                f"{unmatched_hint}"
+            )
+            return
+        else:
+            lines = [f"🎯 <b>Đã cài giá đáy cho {len(matched_items)} sản phẩm:</b>\n"]
+            for p, target_val in matched_items:
+                stt = p["stt"]
+                name = p["name"][:38]
+                cur_p = p.get("price") or 0
+                lines.append(f"• <b>#{stt}</b> {name} ➔ <b>≤ {target_val:,.0f}₫</b> (Hiện tại: <code>{cur_p:,.0f}₫</code>)")
+            lines.append("\n👉 Gõ <code>/targets</code> để xem toàn bộ danh sách đang theo dõi.")
+            if unmatched_queries:
+                lines.append(f"⚠️ <i>Không tìm thấy sản phẩm: {', '.join(unmatched_queries)}</i>")
+            await msg.reply_html("\n".join(lines))
+            return
+
+    elif unmatched_queries:
+        unm_str = ', '.join([f'#{q}' if q.isdigit() else q for q in unmatched_queries])
+        await msg.reply_html(
+            f"❌ <b>Không tìm thấy sản phẩm: {unm_str}</b>\n"
+            f"👉 Gõ <code>/cart</code> để xem danh sách và số thứ tự (STT) chuẩn xác."
+        )
+        return
 
 
 async def cookie_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
