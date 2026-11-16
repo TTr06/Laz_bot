@@ -406,7 +406,11 @@ def track_prices(headless: bool = True, keep_driver: bool = False, prefer_api: b
             old_valid = prod_entry.get("valid", True)
 
             # 1. Phát hiện thay đổi giá (kiểm tra điều kiện giá mục tiêu nếu có)
-            if old_price and curr_price and old_price != curr_price:
+            if old_price is None and curr_price:
+                prod_entry["current_price"] = curr_price
+                if not prod_entry.get("price_history"):
+                    prod_entry["price_history"] = [{"price": curr_price, "timestamp": now}]
+            elif old_price and curr_price and old_price != curr_price:
                 diff = curr_price - old_price
                 pct = (diff / old_price) * 100
                 should_notify, target_price = should_notify_price_change(pid, old_price, curr_price)
@@ -424,6 +428,7 @@ def track_prices(headless: bool = True, keep_driver: bool = False, prefer_api: b
                         "target_price": target_price,
                         "reached_target": bool(target_price and curr_price <= target_price)
                     })
+                # Luôn ghi nhận lịch sử và cập nhật giá hiện tại vào bộ nhớ/database dù giá có cao hơn mức giá đáy
                 prod_entry["price_history"].append({"price": curr_price, "timestamp": now})
                 prod_entry["current_price"] = curr_price
 
@@ -668,8 +673,61 @@ def format_changes_alert(changes: list, total_change: Optional[dict] = None) -> 
 
 
 def get_price_summary() -> str:
+    """
+    Lấy danh sách giá hiện tại và xu hướng biến động:
+    - Luôn hiển thị đầy đủ giá hiện tại thực tế được lưu trong CSDL SQLite
+    - Hiển thị mức giá đáy (nếu có) để người dùng theo dõi khoảng cách giá
+    """
+    # 1. Ưu tiên đọc trực tiếp từ SQLite Database (chuẩn hóa STT & giá tức thì)
+    try:
+        cart_items = database.get_cart_items_db()
+        if cart_items:
+            lines = ["🛒 <b>DANH SÁCH GIÁ ĐANG THEO DÕI:</b>\n"]
+            summary = database.get_cart_summary_db()
+            if summary and "Total" in summary and summary["Total"]:
+                lines.append(f"🔥 <b>GIÁ CUỐI CÙNG HIỆN TẠI:</b> <code>{summary['Total']}</code>\n")
+
+            conn = database.get_connection()
+            for p in cart_items:
+                stt = p["stt"]
+                name = p["name"][:45]
+                price = p.get("price") or 0
+                price_str = f"{price:,.0f}₫" if price else "N/A"
+                sku = p.get("sku", "")
+                sku_str = f" [{sku[:20]}]" if sku else ""
+                pid = p["pid"]
+
+                # Lấy giá khởi điểm từ price_history để tính xu hướng
+                hist_rows = conn.execute("SELECT price FROM price_history WHERE pid = ? ORDER BY id ASC", (pid,)).fetchall()
+                trend = ""
+                if hist_rows and len(hist_rows) > 1:
+                    initial_price = float(hist_rows[0]["price"])
+                    if initial_price != price:
+                        diff = price - initial_price
+                        trend = f" 📉 (-{abs(diff):,.0f}₫)" if diff < 0 else f" 📈 (+{diff:,.0f}₫)"
+
+                # Kiểm tra giá đáy
+                target_p = database.get_target_price_db(pid)
+                target_str = f" | 🎯 Đáy: <code>≤ {target_p:,.0f}₫</code>" if target_p else ""
+
+                lines.append(f"• <b>#{stt}. {name}</b>{sku_str}\n  💰 Giá hiện tại: <code>{price_str}</code>{trend}{target_str}")
+
+            updated_at = summary.get("updated_at")
+            if updated_at:
+                try:
+                    dt = datetime.fromisoformat(updated_at)
+                    lines.append(f"\n🕐 Cập nhật CSDL: <i>{dt.strftime('%H:%M:%S %d/%m/%Y')}</i>")
+                except Exception:
+                    pass
+
+            lines.append("👉 Gõ /cart để xem giỏ hàng đầy đủ chi tiết.")
+            return "\n".join(lines)
+    except Exception as e:
+        print(f"[!] Lỗi đọc SQLite trong get_price_summary: {e}")
+
+    # 2. Fallback nếu SQLite chưa có dữ liệu
     history = load_price_history()
-    if not history["products"]:
+    if not history.get("products"):
         return "ℹ️ Chưa có dữ liệu sản phẩm giỏ hàng. Hãy gửi /cart hoặc /track để kiểm tra."
 
     lines = ["🛒 <b>DANH SÁCH GIÁ ĐANG THEO DÕI:</b>\n"]

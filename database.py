@@ -292,6 +292,28 @@ def save_cart_to_db(products: List[Dict[str, Any]], summary: Dict[str, Any]) -> 
     return updated_products
 
 
+def update_product_price_db(pid: str, new_price: float) -> bool:
+    """
+    Cập nhật giá hiện tại của sản phẩm vào database (cart_items và price_history),
+    đảm bảo luôn lưu giá mới nhất bất kể giá mới cao hơn hay thấp hơn mức giá đáy (target_price).
+    """
+    now_iso = datetime.now().isoformat()
+    with get_db() as conn:
+        # Cập nhật giá hiện tại trong cart_items
+        cur = conn.execute("""
+            UPDATE cart_items 
+            SET price = ?, updated_at = ? 
+            WHERE pid = ?
+        """, (float(new_price), now_iso, pid))
+
+        # Ghi nhận lịch sử giá nếu giá thay đổi
+        last_rec = conn.execute("SELECT price FROM price_history WHERE pid = ? ORDER BY id DESC LIMIT 1", (pid,)).fetchone()
+        if not last_rec or last_rec["price"] != float(new_price):
+            conn.execute("INSERT INTO price_history (pid, price, timestamp) VALUES (?, ?, ?)", (pid, float(new_price), now_iso))
+
+        return cur.rowcount > 0
+
+
 def get_cart_items_db(valid_only: bool = False) -> List[Dict[str, Any]]:
     """Lấy danh sách sản phẩm trong giỏ hàng sắp xếp theo STT chuẩn xác"""
     conn = get_connection()
@@ -678,9 +700,13 @@ def clear_all_target_prices_db() -> int:
 
 def should_notify_price_change_db(pid: str, old_price: Optional[float], new_price: Optional[float]) -> Tuple[bool, Optional[float]]:
     """
-    Kiểm tra điều kiện thông báo giá:
-    - Nếu KHÔNG đặt giá đáy: Luôn gửi thông báo khi có biến động giá.
-    - Nếu CÓ đặt giá đáy: Chỉ gửi thông báo khi giá giảm xuống THẤP HƠN HOẶC BẰNG (<=) giá đáy.
+    Kiểm tra điều kiện gửi thông báo biến động giá đến người dùng:
+    - Lưu ý: Việc lưu và cập nhật giá hiện tại vào CSDL (bảng cart_items và price_history)
+      luôn được thực hiện độc lập 100%, KHÔNG bị giới hạn bởi mức giá đáy.
+    - Điều kiện gửi cảnh báo:
+      + Nếu KHÔNG đặt giá đáy: Luôn gửi cảnh báo khi giá thay đổi.
+      + Nếu CÓ đặt giá đáy: Chỉ gửi cảnh báo khi giá hiện tại đạt hoặc giảm xuống THẤP HƠN HOẶC BẰNG (<=) giá đáy.
+        Nếu giá hiện tại cao hơn giá đáy, bot vẫn ghi nhận giá mới vào database nhưng KHÔNG gửi thông báo làm phiền.
     """
     target = get_target_price_db(pid)
     if target is None:
@@ -689,16 +715,11 @@ def should_notify_price_change_db(pid: str, old_price: Optional[float], new_pric
     if new_price is None:
         return False, target
 
-    # Giá giảm xuống chạm hoặc thấp hơn giá đáy
-    is_price_drop = (old_price is not None and new_price < old_price)
     is_at_or_below_target = (new_price <= target)
-
-    if is_price_drop and is_at_or_below_target:
-        return True, target
-
-    # Giá cũ cao hơn target và giá mới rơi xuống <= target
-    if old_price is not None and old_price > target and is_at_or_below_target:
-        return True, target
+    if is_at_or_below_target:
+        # Gửi thông báo nếu lần đầu quét thấy hoặc giá giảm xuống hoặc trước đó giá cao hơn giá đáy
+        if old_price is None or new_price < old_price or old_price > target:
+            return True, target
 
     return False, target
 
