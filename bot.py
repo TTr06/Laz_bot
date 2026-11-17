@@ -23,6 +23,7 @@ sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -937,7 +938,13 @@ def main() -> None:
         return
 
     print_cli("[*] Khởi động Father Bot Telegram + Auto Scheduler...")
-    app = Application.builder().token(token).post_init(post_init).build()
+    request_config = HTTPXRequest(
+        connect_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=30.0,
+    )
+    app = Application.builder().token(token).request(request_config).post_init(post_init).build()
 
     # Handlers cơ bản
     app.add_handler(CommandHandler("start", start))
