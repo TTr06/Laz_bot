@@ -35,3 +35,9 @@ venv/
 env/
 .idea/
 .vscode/
+
+# C/C++ build artifacts
+*.o
+*.obj
+*.exe
+lazcli
