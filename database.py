@@ -201,20 +201,21 @@ def _migrate_legacy_data() -> None:
                 try:
                     with open(LEGACY_TARGET_FILE, "r", encoding="utf-8") as f:
                         t_data = json.load(f)
-                    for pid, item in t_data.items():
-                        conn.execute("""
-                            INSERT OR REPLACE INTO target_prices 
-                            (pid, target_price, name, sku, url, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """, (
-                            pid,
-                            float(item.get("target_price", 0)),
-                            item.get("name", "Sản phẩm"),
-                            item.get("sku", ""),
-                            item.get("url", ""),
-                            item.get("set_at", datetime.now().isoformat())
-                        ))
-                    logger.info("Đã di chuyển target_prices sang SQLite thành công.")
+                    if t_data:
+                        for pid, item in t_data.items():
+                            conn.execute("""
+                                INSERT OR REPLACE INTO target_prices 
+                                (pid, target_price, name, sku, url, created_at)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            """, (
+                                pid,
+                                float(item.get("target_price", 0)),
+                                item.get("name", "Sản phẩm"),
+                                item.get("sku", ""),
+                                item.get("url", ""),
+                                item.get("set_at", datetime.now().isoformat())
+                            ))
+                        logger.info("Đã di chuyển target_prices sang SQLite thành công.")
                 except Exception as e:
                     logger.warning(f"Lỗi migrate target_prices: {e}")
     except Exception as e:

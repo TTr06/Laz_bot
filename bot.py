@@ -921,23 +921,13 @@ async def post_init(application: Application) -> None:
     print_cli(f"[bold green]Father Bot Telegram đã kết nối thành công![/] (Subscribers: {len(get_subscribers())})")
 
 
-def main() -> None:
-    # 1. Tùy chọn nạp JSON Cookie khi khởi động (Hữu ích khi chạy trên Termux / Console)
-    prompt_interactive_cookie()
-
-    # Khởi tạo event loop cho MainThread (sửa lỗi RuntimeError trên Python 3.12, 3.13 và 3.14)
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
+def create_bot_app(token: str | None = None) -> Application:
+    """Tạo và cấu hình Application với đầy đủ handlers và timeout tối ưu"""
+    if not token:
+        token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token or token == "YOUR_BOT_TOKEN_HERE":
-        print("[!] Lỗi: Chưa có TELEGRAM_BOT_TOKEN trong file .env")
-        return
+        raise ValueError("Chưa có TELEGRAM_BOT_TOKEN trong file .env")
 
-    print_cli("[*] Khởi động Father Bot Telegram + Auto Scheduler...")
     request_config = HTTPXRequest(
         connect_timeout=30.0,
         read_timeout=30.0,
@@ -985,6 +975,27 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
+    return app
+
+
+def main() -> None:
+    # 1. Tùy chọn nạp JSON Cookie khi khởi động (Hữu ích khi chạy trên Termux / Console)
+    prompt_interactive_cookie()
+
+    # Khởi tạo event loop cho MainThread (sửa lỗi RuntimeError trên Python 3.12, 3.13 và 3.14)
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    try:
+        app = create_bot_app()
+    except ValueError as e:
+        print(f"[!] Lỗi: {e}")
+        return
+
+    print_cli("[*] Khởi động Father Bot Telegram + Auto Scheduler...")
     print("[OK] Bot đã sẵn sàng nhận lệnh từ Telegram.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

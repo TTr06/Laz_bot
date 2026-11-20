@@ -52,11 +52,51 @@ pip install -r requirements.txt
 
 ## 🎮 Khởi Chạy
 
+### 🌟 Cách 1: Khởi Chạy Hợp Nhất Hệ Thống (Khuyến Nghị - main.py)
+Chạy đồng thời **Father Bot Telegram + Auto Scheduler** trong luồng ngầm và **Host CLI tương tác** ở luồng chính:
+- Log quét giỏ hàng và biến động giá cuộn ở **PHÍA TRÊN**.
+- Con trỏ nhập lệnh (`LazBot> `) luôn ghim ở **DÒNG DƯỚI CÙNG** không bị đứt đoạn hay vỡ ký tự khi đang gõ.
+
+```bash
+python main.py
+```
+
+*Nếu chỉ muốn dùng Host CLI tra cứu nhanh (One-shot command):*
+```bash
+python main.py prices            # Xem bảng giá các mặt hàng trong giỏ
+python main.py targets           # Xem danh sách giá đáy săn sale
+python main.py setprice 1 100k   # Cài giá đáy cho SP #1
+python main.py db info           # Xem thông tin CSDL SQLite
+```
+
+### Cách 2: Khởi Chạy Riêng Bot Telegram (bot.py)
 ```bash
 python bot.py
 ```
 
 Sau khi bot chạy, mở Telegram và gõ lệnh `/start` vào bot của bạn để bắt đầu sử dụng.
+
+---
+
+## 💻 Danh Sách Lệnh Host CLI (main.py / cli.py)
+
+| Nhóm chức năng | Lệnh | Mô tả |
+| :--- | :--- | :--- |
+| **Giỏ hàng & Giá** | `prices` / `list` | Xem danh sách sản phẩm & giá hiện tại trong CSDL |
+| | `cart` / `scan` | Quét giỏ hàng Lazada & tính Giá Cuối Cùng |
+| | `track` | Quét & kiểm tra biến động giá ngay lập tức |
+| **Giá đáy Săn sale** | `setprice <STT> <giá>` | Cài giá đáy nhận báo động (VD: `setprice 1 100k`) |
+| | `delprice <STT/all>` | Xóa giá đáy đã cài |
+| | `targets` / `target` | Xem bảng theo dõi các mặt hàng đã cài giá đáy |
+| **Cookie Lazada** | `cookie status` | Kiểm tra tình trạng cookie & session tokens |
+| | `cookie set <chuỗi>` | Nạp cookie JSON mới vào hệ thống |
+| **Bot Telegram** | `bot status` | Xem trạng thái bot Telegram & auto-scheduler |
+| | `bot start` / `stop` | Khởi động hoặc tạm dừng luồng bot |
+| | `bot restart` | Khởi động lại luồng bot |
+| **Cơ sở dữ liệu** | `db info` | Xem thống kê dung lượng, bản ghi SQLite |
+| | `db backup` | Tạo bản sao lưu CSDL `lazbot.db` |
+| **Hệ thống** | `clear` / `cls` | Xóa màn hình console |
+| | `quit` / `exit` / `q` | Dừng an toàn hệ thống và thoát |
 
 ---
 
