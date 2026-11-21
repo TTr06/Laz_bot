@@ -55,13 +55,34 @@ def format_net_badge(is_online: bool, latency: int = 0) -> str:
     return "[bold red][NET: OFFLINE][/]"
 
 
+_log_listeners = []
+
+
+def add_log_listener(callback):
+    """Đăng ký hàm lắng nghe sự kiện log dòng lệnh (dùng cho Web CLI / WebSocket)"""
+    if callback not in _log_listeners:
+        _log_listeners.append(callback)
+
+
+def remove_log_listener(callback):
+    """Hủy đăng ký hàm lắng nghe log"""
+    if callback in _log_listeners:
+        _log_listeners.remove(callback)
+
+
 def print_cli(msg: str):
-    """In log ra màn hình console với hỗ trợ mã màu Rich"""
+    """In log ra màn hình console với hỗ trợ mã màu Rich và thông báo tới các Web listener"""
     try:
         console.print(msg)
     except Exception:
         clean = msg.replace("[bold green]", "").replace("[/]", "").replace("[bold red]", "")
         print(clean)
+
+    for listener in list(_log_listeners):
+        try:
+            listener(msg)
+        except Exception:
+            pass
 
 
 def log_check_result(

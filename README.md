@@ -69,7 +69,20 @@ python main.py setprice 1 100k   # Cài giá đáy cho SP #1
 python main.py db info           # Xem thông tin CSDL SQLite
 ```
 
-### Cách 2: Khởi Chạy Riêng Bot Telegram (bot.py)
+### 🌐 Cách 2: Phát Web Console Qua Mạng Nội Bộ (LAN / Wi-Fi)
+Cho phép bạn mở trình duyệt trên **điện thoại, iPad hoặc máy tính khác trong cùng Wi-Fi** để xem log thời gian thực và gõ lệnh điều khiển bot từ xa mà **không cần dùng scrcpy**:
+
+```bash
+python main.py --web
+# hoặc chạy file tiện ích:
+start_web.bat     # Trên Windows
+./start_web.sh    # Trên Linux / Termux Android
+```
+- Mở trình duyệt truy cập: `http://<IP_LAN_CUA_MAY>:8080` (ví dụ: `http://192.168.1.15:8080`).
+- Giao diện có sẵn **hàng nút bấm nhanh trên điện thoại** (Xem giỏ, Quét giá, Xem giá đáy, Bật/tắt bot).
+- Siêu nhẹ: Chỉ tốn ~10MB RAM, CPU ~0.01% (nhẹ hơn scrcpy 50 lần), có thể **khóa/tắt màn hình điện thoại** chạy 24/7 mát rượi.
+
+### Cách 3: Khởi Chạy Riêng Bot Telegram (bot.py)
 ```bash
 python bot.py
 ```
@@ -93,6 +106,9 @@ Sau khi bot chạy, mở Telegram và gõ lệnh `/start` vào bot của bạn �
 | **Bot Telegram** | `bot status` | Xem trạng thái bot Telegram & auto-scheduler |
 | | `bot start` / `stop` | Khởi động hoặc tạm dừng luồng bot |
 | | `bot restart` | Khởi động lại luồng bot |
+| **Web Console LAN** | `web status` | Xem IP LAN & cổng truy cập Web Console |
+| | `web start [cổng]` | Bật máy chủ Web Console (mặc định: 8080) |
+| | `web stop` | Tắt máy chủ Web Console |
 | **Cơ sở dữ liệu** | `db info` | Xem thống kê dung lượng, bản ghi SQLite |
 | | `db backup` | Tạo bản sao lưu CSDL `lazbot.db` |
 | **Hệ thống** | `clear` / `cls` | Xóa màn hình console |

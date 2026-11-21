@@ -45,6 +45,7 @@ import cookie_manager
 from bot import create_bot_app
 from subscriber_manager import get_subscribers, is_auto_track_enabled
 from dashboard import print_cli, dashboard
+from web_server import web_server
 
 # Thiết lập log mức INFO
 logging.basicConfig(
@@ -259,6 +260,7 @@ class LazBotMainCLI(CmdLineInterface):
         self.add_cmd("track", self.cmd_track)
         self.add_cmd("cookie", self.cmd_cookie)
         self.add_cmd("bot", self.cmd_bot)
+        self.add_cmd("web", self.cmd_web)
         self.add_cmd("db", self.cmd_db)
         self.add_cmd("clear", self.cmd_clear)
         self.add_cmd("cls", self.cmd_clear)
@@ -365,6 +367,8 @@ class LazBotMainCLI(CmdLineInterface):
     def do_quit(self):
         print("\n[*] Đang tắt hệ thống LazBot...")
         self.stop_background_bot()
+        if web_server.is_running:
+            web_server.stop()
         self.b_running = False
         print("Tạm biệt!\n")
 
@@ -395,11 +399,16 @@ DANH SÁCH CÁC LỆNH HỖ TRỢ TRÊN HOST CLI:
     • bot stop                : Tạm dừng bot Telegram và scheduler
     • bot restart             : Khởi động lại luồng bot
 
- 5. Quản lý CSDL SQLite (lazbot.db):
+ 5. Giao diện Web CLI qua mạng nội bộ (LAN):
+    • web / web status        : Xem địa chỉ IP LAN và cổng truy cập web
+    • web start [cổng]        : Khởi động máy chủ Web Terminal (mặc định: 8080)
+    • web stop                : Tắt máy chủ Web Terminal
+
+ 6. Quản lý CSDL SQLite (lazbot.db):
     • db info                 : Xem thống kê dung lượng và các bảng dữ liệu
     • db backup               : Tạo bản sao lưu dự phòng cho CSDL
 
- 6. Tiện ích hệ thống:
+ 7. Tiện ích hệ thống:
     • clear / cls             : Xóa màn hình console
     • quit / exit / q         : Thoát chương trình
 ----------------------------------------------------------------------
@@ -635,6 +644,44 @@ DANH SÁCH CÁC LỆNH HỖ TRỢ TRÊN HOST CLI:
         else:
             print("[!] Cú pháp: bot [status | start | stop | restart]")
 
+    def cmd_web(self, argv: List[str], argc: int):
+        action = argv[1].lower() if argc >= 2 else "status"
+
+        if action == "status":
+            lan_ip = web_server.lan_ip
+            port = web_server.port
+            clients = len(web_server.clients)
+            status_str = "🟢 ĐANG CHẠY (ONLINE)" if web_server.is_running else "🔴 ĐÃ DỪNG (STOPPED)"
+
+            print("\n" + "=" * 65)
+            print("  TRẠNG THÁI MÁY CHỦ WEB CLI CONSOLE (MẠNG NỘI BỘ LAN)")
+            print("=" * 65)
+            print(f"• Trạng thái máy chủ   : {status_str}")
+            print(f"• Địa chỉ LAN truy cập : http://{lan_ip}:{port}")
+            print(f"• Địa chỉ Localhost    : http://127.0.0.1:{port}")
+            print(f"• Thiết bị đang nối web: {clients} kết nối")
+            print("• Điều khiển           : 'web start [port]', 'web stop'")
+            print("=" * 65 + "\n")
+
+        elif action == "start":
+            if web_server.is_running:
+                print(f"[i] Web CLI đang chạy tại http://{web_server.lan_ip}:{web_server.port}")
+                return
+            port = int(argv[2]) if argc >= 3 and argv[2].isdigit() else 8080
+            web_server.set_cli(self)
+            web_server.start(port)
+            print(f"[OK] Đã khởi động Web CLI thành công tại: http://{web_server.lan_ip}:{port}")
+
+        elif action == "stop":
+            if not web_server.is_running:
+                print("[i] Web CLI hiện không chạy.")
+                return
+            web_server.stop()
+            print("[OK] Đã tắt Web CLI Server.")
+
+        else:
+            print("[!] Cú pháp: web [status | start <cổng> | stop]")
+
     def cmd_db(self, argv: List[str], argc: int):
         action = argv[1].lower() if argc >= 2 else "info"
 
@@ -690,7 +737,7 @@ DANH SÁCH CÁC LỆNH HỖ TRỢ TRÊN HOST CLI:
         # 1. Nếu có tham số dòng lệnh một lần (One-shot CLI command)
         if init_argv and len(init_argv) > 1:
             first_arg = init_argv[1].lower()
-            if first_arg != "--no-bot":
+            if first_arg not in ("--no-bot", "--web", "-w"):
                 self.init_console()
                 self.init_cmd()
                 if first_arg in self.cmd_do_func:
@@ -723,7 +770,18 @@ DANH SÁCH CÁC LỆNH HỖ TRỢ TRÊN HOST CLI:
         if not disable_bot:
             self.start_background_bot()
 
-        # 4. Vòng lặp tương tác REPL
+        # 4. Kích hoạt Web Terminal Server nếu có tham số --web / -w hoặc biến môi trường
+        enable_web = bool(init_argv and any(arg in init_argv for arg in ("--web", "-w"))) or (os.getenv("ENABLE_WEB_CLI", "").lower() in ("true", "1", "yes"))
+        if enable_web:
+            web_port = 8080
+            for i, arg in enumerate(init_argv or []):
+                if arg in ("--port", "-p") and i + 1 < len(init_argv) and init_argv[i + 1].isdigit():
+                    web_port = int(init_argv[i + 1])
+            web_server.set_cli(self)
+            web_server.start(web_port)
+            print(f"[OK] Đã kích hoạt Web CLI Console tại: http://{web_server.lan_ip}:{web_port}\n")
+
+        # 5. Vòng lặp tương tác REPL
         self.b_running = True
         try:
             while self.b_running:
