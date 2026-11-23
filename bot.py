@@ -99,15 +99,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     auto_register_user(update)
     user = update.effective_user
     msg = (
-        f"Xin chào <b>{user.first_name}</b>! 👋\n\n"
-        f"🤖 <b>LazBot</b> - Công cụ theo dõi giá giỏ hàng Lazada và săn giảm giá tự động.\n\n"
-        f"⚡ <b>TÍNH NĂNG CHÍNH:</b>\n"
-        f"• Tự động chọn tất cả sản phẩm để tính <b>Giá cuối cùng</b> (sau Voucher sàn, Shop & LazCoins).\n"
-        f"• Theo dõi độc lập từng lớp phân loại (Màu sắc, Kích cỡ, Chất liệu...).\n"
-        f"• <b>Cài đặt Giá đáy (<code>/setprice</code>)</b>: Chỉ gửi cảnh báo khi giá chạm hoặc thấp hơn mức mong muốn.\n"
-        f"• Thêm sản phẩm nhanh vào giỏ: Gửi link sản phẩm trực tiếp vào chat.\n"
-        f"• Cơ sở dữ liệu SQLite tốc độ cao, đảm bảo số thứ tự (STT) luôn chuẩn xác 100%.\n\n"
-        f"📋 Gõ <code>/help</code> để xem danh sách lệnh hướng dẫn."
+        f"Xin chào <b>{user.first_name}</b>!\n\n"
+        f"🤖 <b>LazBot</b> - Theo dõi giá giỏ hàng Lazada & săn giá đáy.\n\n"
+        f"<b>Lệnh chính:</b>\n"
+        f"• <code>/cart</code> : Quét giỏ & tính giá sau voucher\n"
+        f"• <code>/prices</code> : Danh sách giá các mặt hàng\n"
+        f"• <code>/targets</code> : Mục tiêu giá đáy\n"
+        f"• <code>1 100k</code> : Cài giá đáy (STT 1 giá 100k)\n"
+        f"• Gửi link sản phẩm để thêm vào giỏ\n\n"
+        f"Gõ <code>/help</code> để xem chi tiết."
     )
     if update.effective_message:
         await update.effective_message.reply_html(msg)
@@ -116,25 +116,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     auto_register_user(update)
     text = (
-        "📖 <b>HƯỚNG DẪN SỬ DỤNG LAZBOT:</b>\n\n"
-        "🛒 <b>Giỏ hàng & Theo dõi giá:</b>\n"
-        "• <code>/cart</code> : Quét giỏ hàng & tính Giá cuối sau voucher\n"
-        "• <code>/track</code> : Kiểm tra biến động giá ngay lập tức\n"
-        "• <code>/prices</code> : Xem danh sách giá các mặt hàng đã lưu\n"
-        "• <code>/add &lt;link&gt;</code> : Thêm sản phẩm vào giỏ hàng\n\n"
-        "🎯 <b>Cài đặt Giá đáy (Săn sale):</b>\n"
-        "• <b>Nhắn nhanh vào chat:</b> <code>1 100k</code>, <code>2 50k</code>, <code>1 1tr5</code>\n"
-        "• Đặt nhiều SP: <code>1 100k, 2 50k</code> (hoặc gửi nhiều dòng)\n"
-        "• Xóa nhanh: <code>xoa 1</code> hoặc <code>1 0</code> (xóa hết: <code>xoa all</code>)\n"
-        "• Lệnh gốc: <code>/setprice &lt;STT&gt; &lt;giá&gt;</code> | <code>/delprice &lt;STT&gt;</code>\n"
-        "• <code>/targets</code> : Xem danh sách các mặt hàng đang cài giá đáy\n\n"
-        "⏰ <b>Tự động quét ngầm:</b>\n"
-        "• <code>/schedule</code> : Tình trạng lịch quét ngầm\n"
+        "📖 <b>LỆNH SỬ DỤNG:</b>\n\n"
+        "🛒 <b>Giỏ hàng & Giá:</b>\n"
+        "• <code>/cart</code> : Quét giỏ & tính giá sau voucher\n"
+        "• <code>/track</code> : Kiểm tra biến động giá\n"
+        "• <code>/prices</code> : Xem giá các mặt hàng\n"
+        "• <code>/add &lt;link&gt;</code> : Thêm sản phẩm vào giỏ\n\n"
+        "🎯 <b>Giá đáy (Săn sale):</b>\n"
+        "• Cài đặt: <code>&lt;STT&gt; &lt;giá&gt;</code> (VD: <code>1 100k</code>, <code>2 1tr5</code>)\n"
+        "• Xóa: <code>xoa &lt;STT&gt;</code> (xóa hết: <code>xoa all</code>)\n"
+        "• <code>/targets</code> : Danh sách giá đáy\n\n"
+        "⏰ <b>Quét ngầm:</b>\n"
+        "• <code>/schedule</code> : Lịch quét\n"
         "• <code>/auto_on</code> / <code>/auto_off</code> : Bật / tắt quét ngầm\n\n"
-        "🔑 <b>Cookie & Tài khoản:</b>\n"
-        "• <code>/cookie &lt;JSON/text&gt;</code> : Nạp cookie mới\n"
-        "• <code>/cookie_status</code> : Kiểm tra trạng thái đăng nhập\n"
-        "• <code>/ping</code> : Kiểm tra phản hồi bot\n"
+        "🔑 <b>Cookie:</b>\n"
+        "• Dán mảng JSON cookie vào chat\n"
+        "• <code>/cookie_status</code> : Kiểm tra phiên đăng nhập"
     )
     if update.effective_message:
         await update.effective_message.reply_html(text)
@@ -815,26 +812,34 @@ async def targets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     targets = database.get_all_target_prices_db()
     if not targets:
         await msg.reply_html(
-            "ℹ️ <b>Chưa có sản phẩm nào được cài đặt giá đáy.</b>\n\n"
-            "👉 Đặt giá đáy: <code>/setprice &lt;STT&gt; &lt;giá&gt;</code> (VD: <code>/setprice 1 100k</code>)"
+            "ℹ️ <b>Chưa có sản phẩm cài giá đáy.</b>\n"
+            "👉 Dùng: <code>1 100k</code> (STT 1 giá 100k)"
         )
         return
 
-    lines = ["🎯 <b>DANH SÁCH GIÁ ĐÁY ĐANG THEO DÕI:</b>\n"]
+    lines = ["🎯 <b>DANH SÁCH GIÁ ĐÁY:</b>\n"]
     for row in targets:
-        idx = row.get("stt") or "?"
+        idx = row.get("stt") or "-"
         name = row.get("name", "Sản phẩm")[:55]
-        sku = row.get("sku", "")
+        sku = row.get("sku", "").strip()
         sku_str = f"   🏷️ <i>Phân loại: {sku}</i>\n" if sku else ""
         target_p = row.get("target_price", 0)
         curr_p = row.get("current_price")
-        curr_str = f"{curr_p:,.0f}₫" if curr_p else "N/A"
+        is_active = row.get("is_active", 1)
 
-        if curr_p and curr_p <= target_p:
+        if not is_active or row.get("stt") is None:
+            status_tag = "<i>Vô hiệu (Ngoài giỏ)</i>"
+            curr_str = "N/A"
+        elif curr_p is None:
+            status_tag = "<i>Chờ quét</i>"
+            curr_str = "N/A"
+        elif curr_p <= target_p:
             status_tag = "🎉 <b>ĐÃ ĐẠT!</b>"
+            curr_str = f"{curr_p:,.0f}₫"
         else:
-            diff = curr_p - target_p if curr_p else 0
-            status_tag = f"<i>Cần giảm thêm {diff:,.0f}₫</i>" if diff > 0 else "<i>Đang chờ</i>"
+            diff = curr_p - target_p
+            status_tag = f"<i>Thiếu {diff:,.0f}₫</i>"
+            curr_str = f"{curr_p:,.0f}₫"
 
         lines.append(
             f"<b>#{idx}. {name}</b>\n"
@@ -843,7 +848,7 @@ async def targets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"   💰 Hiện tại: <code>{curr_str}</code> ({status_tag})\n"
         )
 
-    lines.append("👉 Xóa giá đáy: <code>/delprice &lt;STT&gt;</code> hoặc <code>/delprice all</code>")
+    lines.append("👉 Xóa: <code>/delprice &lt;STT&gt;</code> hoặc <code>/delprice all</code>")
     await msg.reply_html("\n".join(lines))
 
 

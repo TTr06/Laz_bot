@@ -4,6 +4,7 @@ Tối ưu hiệu năng, lưu trữ đồng bộ giỏ hàng, lịch sử giá v�
 Đảm bảo Số thứ tự (STT 1, 2, 3...) luôn chuẩn xác, không bị xáo trộn khi thêm/sửa giá đáy.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -15,6 +16,11 @@ from datetime import datetime
 from typing import Optional, Tuple, Dict, Any, List
 
 logger = logging.getLogger(__name__)
+
+
+def _hash_id(raw_str: str) -> str:
+    """Tạo mã định danh duy nhất (MD5 16 ký tự) từ Tên sản phẩm + Phân loại SKU"""
+    return hashlib.md5(raw_str.encode("utf-8")).hexdigest()[:16]
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "lazbot.db")
@@ -85,7 +91,8 @@ def init_db() -> None:
                 sku TEXT DEFAULT '',
                 url TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_notified_price REAL DEFAULT NULL
+                last_notified_price REAL DEFAULT NULL,
+                is_active INTEGER DEFAULT 1
             );
 
             CREATE INDEX IF NOT EXISTS idx_target_prices_pid ON target_prices(pid);
@@ -125,6 +132,12 @@ def init_db() -> None:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
+
+        # Di chuyển schema tự động nếu phiên bản cũ chưa có cột is_active
+        try:
+            conn.execute("ALTER TABLE target_prices ADD COLUMN is_active INTEGER DEFAULT 1")
+        except Exception:
+            pass
 
     # Tự động di chuyển dữ liệu cũ từ JSON sang SQLite nếu lần đầu khởi tạo
     _migrate_legacy_data()
@@ -257,7 +270,6 @@ def save_cart_to_db(products: List[Dict[str, Any]], summary: Dict[str, Any]) -> 
             shop_name = p.get("shop_name", "")
 
             # Mã hash chuẩn
-            from price_tracker import _hash_id
             pid = _hash_id(f"{name} || {sku}")
 
             conn.execute("""
@@ -289,6 +301,12 @@ def save_cart_to_db(products: List[Dict[str, Any]], summary: Dict[str, Any]) -> 
             len(ordered_items),
             now_iso
         ))
+
+        # Tự động cập nhật trạng thái theo dõi trong database:
+        # Sản phẩm còn trong giỏ -> is_active = 1 (Kích hoạt)
+        # Sản phẩm đã bị xóa khỏi giỏ -> is_active = 0 (Vô hiệu hóa)
+        conn.execute("UPDATE target_prices SET is_active = 1 WHERE pid IN (SELECT pid FROM cart_items)")
+        conn.execute("UPDATE target_prices SET is_active = 0 WHERE pid NOT IN (SELECT pid FROM cart_items)")
 
     return updated_products
 
@@ -638,8 +656,8 @@ def set_target_price_db(pid: str, name: str, sku: str, target_price: float, url:
     with get_db() as conn:
         conn.execute("""
             INSERT OR REPLACE INTO target_prices 
-            (pid, target_price, name, sku, url, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (pid, target_price, name, sku, url, created_at, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
         """, (pid, float(target_price), name, sku, url, now_iso))
 
     return {
@@ -661,13 +679,14 @@ def get_target_price_db(pid: str) -> Optional[float]:
     return None
 
 
-def get_all_target_prices_db() -> List[Dict[str, Any]]:
+def get_all_target_prices_db(active_only: bool = False) -> List[Dict[str, Any]]:
     """
-    Lấy danh sách toàn bộ các sản phẩm đã cài đặt Giá đáy:
-    Luôn kèm theo Số thứ tự STT và Giá hiện tại trong giỏ hàng.
+    Lấy danh sách sản phẩm đã cài đặt Giá đáy:
+    - Kèm STT, Giá hiện tại, trạng thái kích hoạt is_active.
+    - active_only: Chỉ lấy các sản phẩm đang có trong giỏ hàng.
     """
     conn = get_connection()
-    rows = conn.execute("""
+    sql = """
         SELECT 
             t.pid,
             t.target_price,
@@ -676,12 +695,20 @@ def get_all_target_prices_db() -> List[Dict[str, Any]]:
             COALESCE(c.url, t.url) as url,
             c.stt,
             c.price as current_price,
+            c.valid as in_cart_valid,
+            COALESCE(t.is_active, 1) as is_active,
             t.created_at
         FROM target_prices t
         LEFT JOIN cart_items c ON t.pid = c.pid
-        ORDER BY CASE WHEN c.stt IS NULL THEN 9999 ELSE c.stt END ASC
-    """).fetchall()
-
+    """
+    if active_only:
+        sql += " WHERE COALESCE(t.is_active, 1) = 1 AND c.stt IS NOT NULL"
+    sql += """
+        ORDER BY 
+            CASE WHEN COALESCE(t.is_active, 1) = 1 AND c.stt IS NOT NULL THEN 0 ELSE 1 END,
+            CASE WHEN c.stt IS NULL THEN 9999 ELSE c.stt END ASC
+    """
+    rows = conn.execute(sql).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -702,27 +729,24 @@ def clear_all_target_prices_db() -> int:
 def should_notify_price_change_db(pid: str, old_price: Optional[float], new_price: Optional[float]) -> Tuple[bool, Optional[float]]:
     """
     Kiểm tra điều kiện gửi thông báo biến động giá đến người dùng:
-    - Lưu ý: Việc lưu và cập nhật giá hiện tại vào CSDL (bảng cart_items và price_history)
-      luôn được thực hiện độc lập 100%, KHÔNG bị giới hạn bởi mức giá đáy.
-    - Điều kiện gửi cảnh báo:
-      + Nếu KHÔNG đặt giá đáy: Luôn gửi cảnh báo khi giá thay đổi.
-      + Nếu CÓ đặt giá đáy: Chỉ gửi cảnh báo khi giá hiện tại đạt hoặc giảm xuống THẤP HƠN HOẶC BẰNG (<=) giá đáy.
-        Nếu giá hiện tại cao hơn giá đáy, bot vẫn ghi nhận giá mới vào database nhưng KHÔNG gửi thông báo làm phiền.
+    - Sản phẩm đã bị vô hiệu hóa (không còn trong giỏ): KHÔNG gửi thông báo.
+    - Nếu KHÔNG đặt giá đáy: Luôn gửi cảnh báo khi giá thay đổi.
+    - Nếu CÓ đặt giá đáy: Chỉ gửi cảnh báo khi giá hiện tại <= giá đáy.
     """
-    target = get_target_price_db(pid)
-    if target is None:
-        return True, None
-
-    if new_price is None:
+    conn = get_connection()
+    row = conn.execute("SELECT target_price, COALESCE(is_active, 1) as is_active FROM target_prices WHERE pid = ?", (pid,)).fetchone()
+    if row:
+        if row["is_active"] == 0:
+            return False, None
+        target = float(row["target_price"])
+        if new_price is None:
+            return False, target
+        if new_price <= target:
+            if old_price is None or new_price < old_price or old_price > target:
+                return True, target
         return False, target
 
-    is_at_or_below_target = (new_price <= target)
-    if is_at_or_below_target:
-        # Gửi thông báo nếu lần đầu quét thấy hoặc giá giảm xuống hoặc trước đó giá cao hơn giá đáy
-        if old_price is None or new_price < old_price or old_price > target:
-            return True, target
-
-    return False, target
+    return True, None
 
 
 # ==============================================================================

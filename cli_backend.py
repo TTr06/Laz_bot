@@ -32,16 +32,16 @@ def cmd_prices():
     updated_at = summary.get("updated_at", "N/A") if summary else "N/A"
 
     print("\n" + "=" * 80)
-    print(f"  DANH SÁCH SẢN PHẨM & GIÁ HIỆN TẠI TRONG GIỎ HÀNG LAZADA")
-    print(f"  Tổng tiền giỏ hàng: {total_val} | Cập nhật lần cuối: {updated_at}")
-    print("=" * 80)
-    print(f"{'STT':<4} | {'Tên sản phẩm':<38} | {'Phân loại (SKU)':<16} | {'Giá hiện tại':<13} | {'Giá đáy':<10}")
-    print("-" * 80)
+    print("\n" + "=" * 90)
+    print(f"  GIỎ HÀNG LAZADA (Tổng: {total_val} | Cập nhật: {updated_at})")
+    print("=" * 90)
+    print(f"{'STT':<4} | {'Tên sản phẩm':<32} | {'Phân loại':<24} | {'Giá':<12} | {'Giá đáy':<10}")
+    print("-" * 90)
 
     for p in items:
         stt = p["stt"]
-        name = p["name"][:36]
-        sku = (p.get("sku") or "")[:15]
+        name = p["name"][:30]
+        sku = (p.get("sku") or "")[:22]
         price = p.get("price") or 0
         price_str = f"{price:,.0f}₫"
 
@@ -49,46 +49,50 @@ def cmd_prices():
         target_str = f"≤ {target_p:,.0f}₫" if target_p else "---"
 
         valid_str = "" if p.get("valid", True) else " [Hết hàng]"
-        print(f"{stt:<4} | {name:<38} | {sku:<16} | {price_str:<13} | {target_str:<10}{valid_str}")
+        print(f"{stt:<4} | {name:<32} | {sku:<24} | {price_str:<12} | {target_str:<10}{valid_str}")
 
-    print("-" * 80)
-    print(f"Tổng cộng: {len(items)} sản phẩm/phân loại.\n")
+    print("-" * 90)
+    print(f"Tổng: {len(items)} mặt hàng.\n")
 
 
 def cmd_targets():
     """Xem danh sách các sản phẩm đang được cài đặt giá đáy"""
     targets = database.get_all_target_prices_db()
     if not targets:
-        print("\n[i] Hiện chưa có sản phẩm nào được cài đặt giá đáy.")
-        print("    -> Dùng lệnh: setprice <STT> <giá> (VD: setprice 1 100k)\n")
+        print("\n[i] Chưa có sản phẩm cài giá đáy. Dùng: setprice <STT> <giá>\n")
         return
 
-    print("\n" + "=" * 85)
-    print(f"  DANH SÁCH MỨC GIÁ ĐÁY SĂN SALE (TARGET PRICES)")
-    print("=" * 85)
-    print(f"{'STT':<4} | {'Tên sản phẩm':<36} | {'Phân loại':<14} | {'Giá hiện tại':<13} | {'Giá đáy':<12} | {'Trạng thái'}")
-    print("-" * 85)
+    print("\n" + "=" * 95)
+    print("  MỤC TIÊU GIÁ ĐÁY")
+    print("=" * 95)
+    print(f"{'STT':<4} | {'Tên sản phẩm':<30} | {'Phân loại':<24} | {'Hiện tại':<12} | {'Mục tiêu':<12} | {'Trạng thái'}")
+    print("-" * 95)
 
     for t in targets:
-        stt = str(t.get("stt") or "?")
-        name = t.get("name", "Sản phẩm")[:34]
-        sku = (t.get("sku") or "")[:12]
+        stt = str(t.get("stt") or "-")
+        name = t.get("name", "Sản phẩm")[:28]
+        sku = (t.get("sku") or "")[:22]
         target_p = t.get("target_price", 0)
         curr_p = t.get("current_price")
+        is_active = t.get("is_active", 1)
 
         curr_str = f"{curr_p:,.0f}₫" if curr_p else "N/A"
         target_str = f"≤ {target_p:,.0f}₫"
 
-        if curr_p and curr_p <= target_p:
-            status = ">>> ĐÃ ĐẠT! <<<"
+        if not is_active or t.get("stt") is None:
+            status = "Vô hiệu (Ngoài giỏ)"
+        elif curr_p is None:
+            status = "Chờ quét"
+        elif curr_p <= target_p:
+            status = "ĐÃ ĐẠT"
         else:
-            diff = (curr_p - target_p) if curr_p else 0
-            status = f"Cần giảm thêm {diff:,.0f}₫" if diff > 0 else "Đang chờ"
+            diff = curr_p - target_p
+            status = f"Thiếu {diff:,.0f}₫"
 
-        print(f"{stt:<4} | {name:<36} | {sku:<14} | {curr_str:<13} | {target_str:<12} | {status}")
+        print(f"{stt:<4} | {name:<30} | {sku:<24} | {curr_str:<12} | {target_str:<12} | {status}")
 
-    print("-" * 85)
-    print(f"Đang theo dõi giá đáy cho {len(targets)} sản phẩm.\n")
+    print("-" * 95)
+    print(f"Theo dõi: {len(targets)} sản phẩm.\n")
 
 
 def cmd_setprice(query: str, price_str: str):

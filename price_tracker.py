@@ -298,7 +298,8 @@ def _extract_cart_and_summary(driver, summary_raw_text: Optional[str] = None) ->
 
                     valid = bool(fields.get("valid", True))
                     sku_info = fields.get("sku", {}) or fields.get("skuInfo", {})
-                    sku_text = sku_info.get("skuText", "")
+                    sku_text = (sku_info.get("skuText") or "").strip()
+                    sku_text = re.sub(r'\s+', ' ', sku_text)
                     url = fields.get("url") or fields.get("itemUrl") or ""
                     if url:
                         if url.startswith("//"):
@@ -617,15 +618,14 @@ def format_changes_alert(changes: list, total_change: Optional[dict] = None) -> 
     if not changes and not total_change:
         return ""
 
-    lines = ["🔔 <b>CẢNH BÁO BIẾN ĐỘNG GIÁ GIỎ HÀNG!</b>\n"]
+    lines = ["🔔 <b>BIẾN ĐỘNG GIÁ GIỎ HÀNG</b>\n"]
 
     if total_change:
         direction = total_change["direction"]
         icon = "📉" if direction == "GIẢM" else "📈"
         diff_str = f"{abs(total_change['diff']):,.0f}₫"
         lines.append(
-            f"{icon} <b>TỔNG TIỀN GIỎ HÀNG ĐÃ {direction}:</b>\n"
-            f"   {total_change['old_total']} ➔ <b>{total_change['new_total']}</b> ({direction} {diff_str})\n"
+            f"{icon} <b>Tổng giỏ hàng:</b> {total_change['old_total']} ➔ <b>{total_change['new_total']}</b> ({direction} {diff_str})\n"
         )
 
     for c in changes:
@@ -636,7 +636,7 @@ def format_changes_alert(changes: list, total_change: Optional[dict] = None) -> 
         raw_url = c.get("url", "").strip()
         if raw_url and raw_url.startswith("//"):
             raw_url = "https:" + raw_url
-        link_str = f"   🛒 <b>Link mua ngay:</b> <a href=\"{raw_url}\">Mở sản phẩm trên Lazada</a>\n" if raw_url else ""
+        link_str = f"   🛒 <a href=\"{raw_url}\">Mua ngay trên Lazada</a>\n" if raw_url else ""
 
         if c_type == "PRICE_CHANGE":
             icon = "📉" if c["direction"] == "GIẢM" else "📈"
@@ -645,30 +645,29 @@ def format_changes_alert(changes: list, total_change: Optional[dict] = None) -> 
             diff_str = f"{abs(c['diff']):,.0f}₫"
             target_badge = ""
             if c.get("reached_target") and c.get("target_price"):
-                target_badge = f"   🎯 <b>ĐÃ CHẠM GIÁ ĐÁY: ≤ {c['target_price']:,.0f}₫!</b> 🎉\n"
+                target_badge = f"   🎯 <b>ĐẠT GIÁ ĐÁY: ≤ {c['target_price']:,.0f}₫</b>\n"
 
             lines.append(
                 f"{icon} <b>{name}</b>\n"
                 f"{sku_str}"
                 f"{target_badge}"
-                f"   💰 {old_p} ➔ <b>{new_p}</b>\n"
-                f"   ⚡ Biến động: <b>{c['direction']} {diff_str}</b> ({c['diff_pct']}%)\n"
+                f"   💰 {old_p} ➔ <b>{new_p}</b> ({c['direction']} {diff_str}, {c['diff_pct']}%)\n"
                 f"{link_str}"
             )
         elif c_type == "STOCK_CHANGE":
             status = c["status"]
             icon = "🎉" if status == "CÓ HÀNG LẠI" else "⚠️"
             price_val = c.get("price")
-            price_info = f"   💰 Giá hiện tại: <b>{price_val:,.0f}₫</b>\n" if price_val else ""
+            price_info = f"   💰 Giá: <b>{price_val:,.0f}₫</b>\n" if price_val else ""
             lines.append(
                 f"{icon} <b>{name}</b>\n"
                 f"{sku_str}"
-                f"   📦 Trạng thái tồn kho: <b>{status}</b>!\n"
+                f"   📦 Tồn kho: <b>{status}</b>\n"
                 f"{price_info}"
                 f"{link_str}"
             )
 
-    lines.append("👉 Gõ /cart để xem toàn bộ giỏ hàng ngay!")
+    lines.append("👉 Gõ /cart để xem giỏ hàng.")
     return "\n".join(lines)
 
 
