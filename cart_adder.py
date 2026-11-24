@@ -167,7 +167,7 @@ def fetch_product_details(url: str, headless: bool = True) -> Dict[str, Any]:
             time.sleep(0.12)
 
         # Trích xuất dữ liệu chi tiết kèm phân loại nhiều lớp
-        result = driver.execute_script('''
+        result = driver.execute_script(r'''
             var res = {
                 title: '',
                 price: '',
@@ -178,211 +178,215 @@ def fetch_product_details(url: str, headless: bool = True) -> Dict[str, Any]:
                 isAvailable: true
             };
 
-            // 1. Kiểm tra nếu sản phẩm bị gỡ
-            var bodyText = document.body ? document.body.innerText : '';
-            if (bodyText.indexOf("Sorry! This product is no longer available") !== -1 ||
-                bodyText.indexOf("Sản phẩm này không còn tồn tại") !== -1) {
-                res.isAvailable = false;
-                return res;
-            }
-
-            // 2. Schema JSON-LD
-            var scripts = document.querySelectorAll('script[type="application/ld+json"]');
-            for (var i = 0; i < scripts.length; i++) {
-                try {
-                    var data = JSON.parse(scripts[i].innerText);
-                    if (data['@type'] === 'Product') {
-                        res.title = data.name || res.title;
-                        if (data.image && data.image.length > 0) {
-                            res.image = data.image[0];
-                        }
-                    }
-                } catch(e) {}
-            }
-
-            // 3. Tên sản phẩm từ DOM
-            if (!res.title) {
-                var titleEl = document.querySelector('.pdp-mod-product-badge-title, h1, .pdp-product-title');
-                if (titleEl) res.title = titleEl.innerText.trim();
-            }
-
-            // 4. Giá sản phẩm
-            var salePriceEl = document.querySelector('.pdp-v2-product-price-content-salePrice, .pdp-price_color_orange, .pdp-price');
-            if (salePriceEl) res.price = salePriceEl.innerText.trim();
-
-            var origPriceEl = document.querySelector('.pdp-v2-product-price-content-originalPrice, .pdp-price_type_deleted');
-            if (origPriceEl) res.originalPrice = origPriceEl.innerText.trim();
-
-            // 5. Trích xuất từng lớp phân loại (Layers: Màu sắc, Size, Chất liệu...)
-            var layers = [];
-
-            // A. Tìm sâu trong dữ liệu module JavaScript của Lazada (Deep search)
-            function getSkuBase() {
-                try {
-                    if (window.__moduleData__) {
-                        var md = window.__moduleData__;
-                        if (md.data && md.data.root && md.data.root.fields && md.data.root.fields.skuBase) return md.data.root.fields.skuBase;
-                        if (md.data && md.data.fields && md.data.fields.skuBase) return md.data.fields.skuBase;
-                        if (md.fields && md.fields.skuBase) return md.fields.skuBase;
-                    }
-                } catch(e) {}
-                try {
-                    if (window.__INIT_DATA__) {
-                        var id = window.__INIT_DATA__;
-                        if (id.data && id.data.root && id.data.root.fields && id.data.root.fields.skuBase) return id.data.root.fields.skuBase;
-                        if (id.data && id.data.fields && id.data.fields.skuBase) return id.data.fields.skuBase;
-                        if (id.module && id.module.data && id.module.data.root && id.module.data.root.fields && id.module.data.root.fields.skuBase) return id.module.data.root.fields.skuBase;
-                        if (id.module && id.module.data && id.module.data.fields && id.module.data.fields.skuBase) return id.module.data.fields.skuBase;
-                    }
-                } catch(e) {}
-                try {
-                    if (window.pageData && window.pageData.skuBase) return window.pageData.skuBase;
-                    if (window.g_config && window.g_config.skuBase) return window.g_config.skuBase;
-                } catch(e) {}
-                return null;
-            }
-
             try {
-                var skuBase = getSkuBase();
-                if (skuBase && skuBase.properties && Array.isArray(skuBase.properties)) {
-                    var seenPropNames = {};
-                    for (var p = 0; p < skuBase.properties.length; p++) {
-                        var prop = skuBase.properties[p];
-                        var pName = (prop.name || '').replace(/[:：]/g, '').trim();
-                        if (!pName) pName = 'Lớp ' + (layers.length + 1);
-                        var pLower = pName.toLowerCase();
-                        if (seenPropNames[pLower]) continue;
+                // 1. Kiểm tra nếu sản phẩm bị gỡ
+                var bodyText = document.body ? document.body.innerText : '';
+                if (bodyText.indexOf("Sorry! This product is no longer available") !== -1 ||
+                    bodyText.indexOf("Sản phẩm này không còn tồn tại") !== -1) {
+                    res.isAvailable = false;
+                    return res;
+                }
 
-                        var options = [];
-                        var seenOpt = {};
-                        if (prop.values && Array.isArray(prop.values)) {
-                            for (var v = 0; v < prop.values.length; v++) {
-                                var vName = (prop.values[v].name || '').trim();
-                                if (vName && !seenOpt[vName.toLowerCase()]) {
-                                    seenOpt[vName.toLowerCase()] = true;
-                                    options.push({
-                                        name: vName,
-                                        selected: false,
-                                        disabled: false
-                                    });
-                                }
+                // 2. Schema JSON-LD
+                var scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                for (var i = 0; i < scripts.length; i++) {
+                    try {
+                        var data = JSON.parse(scripts[i].innerText);
+                        if (data['@type'] === 'Product') {
+                            res.title = data.name || res.title;
+                            if (data.image && data.image.length > 0) {
+                                res.image = data.image[0];
                             }
                         }
-                        if (options.length > 0) {
-                            seenPropNames[pLower] = true;
-                            layers.push({
-                                name: pName,
-                                options: options
-                            });
-                        }
-                    }
-                }
-            } catch(e) {}
-
-            // B. Trích xuất trực tiếp từ các khối DOM của từng lớp (nếu JS chưa có)
-            if (layers.length === 0) {
-                var candidateBlocks = document.querySelectorAll(
-                    '.sku-prop, .pdp-mod-product-info-section-sku > div, .pdp-block__sku'
-                );
-                if (candidateBlocks.length === 0) {
-                    candidateBlocks = document.querySelectorAll('[class*="sku-prop"]');
+                    } catch(e) {}
                 }
 
-                // Lọc Top-level blocks: Loại bỏ phần tử con bị lồng bên trong block khác và popup/dialog
-                var topBlocks = [];
-                for (var i = 0; i < candidateBlocks.length; i++) {
-                    var b = candidateBlocks[i];
-                    var cls = (b.className || '').toString();
-                    if (cls.indexOf('sku-prop-content-item') !== -1 || 
-                        cls.indexOf('sku-prop-title') !== -1 ||
-                        cls.indexOf('sku-variable-') !== -1) {
-                        continue;
-                    }
-                    if (b.closest('.next-dialog, .pdp-drawer, .sku-drawer, [style*="display: none"], [style*="display:none"], [hidden]')) {
-                        continue;
-                    }
-                    var isChild = false;
-                    for (var j = 0; j < candidateBlocks.length; j++) {
-                        if (i !== j && candidateBlocks[j].contains(b)) {
-                            isChild = true;
-                            break;
-                        }
-                    }
-                    if (!isChild) {
-                        topBlocks.push(b);
-                    }
+                // 3. Tên sản phẩm từ DOM
+                if (!res.title) {
+                    var titleEl = document.querySelector('.pdp-mod-product-badge-title, h1, .pdp-product-title');
+                    if (titleEl) res.title = titleEl.innerText.trim();
                 }
 
-                var seenDomKeys = {};
-                for (var bIdx = 0; bIdx < topBlocks.length; bIdx++) {
-                    var block = topBlocks[bIdx];
+                // 4. Giá sản phẩm
+                var salePriceEl = document.querySelector('.pdp-v2-product-price-content-salePrice, .pdp-price_color_orange, .pdp-price');
+                if (salePriceEl) res.price = salePriceEl.innerText.trim();
 
-                    // Tên lớp
-                    var titleEl = block.querySelector('.sku-prop-title, .pdp-mod-product-info-section-title, .section-title, h3, [class*="prop-title"]');
-                    var groupName = '';
-                    if (titleEl) {
-                        var fullT = titleEl.innerText || '';
-                        var subVal = titleEl.querySelector('.sku-name, [class*="selected"], span:not(:first-child)');
-                        if (subVal) fullT = fullT.replace(subVal.innerText, '');
-                        groupName = fullT.split(/[:：]/)[0].trim();
+                var origPriceEl = document.querySelector('.pdp-v2-product-price-content-originalPrice, .pdp-price_type_deleted');
+                if (origPriceEl) res.originalPrice = origPriceEl.innerText.trim();
+
+                // 5. Trích xuất từng lớp phân loại (Layers: Màu sắc, Size, Chất liệu...)
+                var layers = [];
+
+                // A. Tìm sâu trong dữ liệu module JavaScript của Lazada (Deep search)
+                function getSkuBase() {
+                    try {
+                        if (window.__moduleData__) {
+                            var md = window.__moduleData__;
+                            if (md.data && md.data.root && md.data.root.fields && md.data.root.fields.skuBase) return md.data.root.fields.skuBase;
+                            if (md.data && md.data.fields && md.data.fields.skuBase) return md.data.fields.skuBase;
+                            if (md.fields && md.fields.skuBase) return md.fields.skuBase;
+                        }
+                    } catch(e) {}
+                    try {
+                        if (window.__INIT_DATA__) {
+                            var id = window.__INIT_DATA__;
+                            if (id.data && id.data.root && id.data.root.fields && id.data.root.fields.skuBase) return id.data.root.fields.skuBase;
+                            if (id.data && id.data.fields && id.data.fields.skuBase) return id.data.fields.skuBase;
+                            if (id.module && id.module.data && id.module.data.root && id.module.data.root.fields && id.module.data.root.fields.skuBase) return id.module.data.root.fields.skuBase;
+                            if (id.module && id.module.data && id.module.data.fields && id.module.data.fields.skuBase) return id.module.data.fields.skuBase;
+                        }
+                    } catch(e) {}
+                    try {
+                        if (window.pageData && window.pageData.skuBase) return window.pageData.skuBase;
+                        if (window.g_config && window.g_config.skuBase) return window.g_config.skuBase;
+                    } catch(e) {}
+                    return null;
+                }
+
+                try {
+                    var skuBase = getSkuBase();
+                    if (skuBase && skuBase.properties && Array.isArray(skuBase.properties)) {
+                        var seenPropNames = {};
+                        for (var p = 0; p < skuBase.properties.length; p++) {
+                            var prop = skuBase.properties[p];
+                            var pName = (prop.name || '').replace(/[:：]/g, '').trim();
+                            if (!pName) pName = 'Lớp ' + (layers.length + 1);
+                            var pLower = pName.toLowerCase();
+                            if (seenPropNames[pLower]) continue;
+
+                            var options = [];
+                            var seenOpt = {};
+                            if (prop.values && Array.isArray(prop.values)) {
+                                for (var v = 0; v < prop.values.length; v++) {
+                                    var vName = (prop.values[v].name || '').trim();
+                                    if (vName && !seenOpt[vName.toLowerCase()]) {
+                                        seenOpt[vName.toLowerCase()] = true;
+                                        options.push({
+                                            name: vName,
+                                            selected: false,
+                                            disabled: false
+                                        });
+                                    }
+                                }
+                            }
+                            if (options.length > 0) {
+                                seenPropNames[pLower] = true;
+                                layers.push({
+                                    name: pName,
+                                    options: options
+                                });
+                            }
+                        }
+                    }
+                } catch(e) {}
+
+                // B. Trích xuất trực tiếp từ các khối DOM của từng lớp (nếu JS chưa có)
+                if (layers.length === 0) {
+                    var candidateBlocks = document.querySelectorAll(
+                        '.sku-prop, .pdp-mod-product-info-section-sku > div, .pdp-block__sku'
+                    );
+                    if (candidateBlocks.length === 0) {
+                        candidateBlocks = document.querySelectorAll('[class*="sku-prop"]');
                     }
 
-                    // Các tùy chọn trong lớp
-                    var items = block.querySelectorAll('.sku-variable-name, .sku-variable-size, .sku-name, .sku-prop-content-item, [class*="sku-variable-item"]');
-                    var options = [];
-                    var seenOpts = {};
-                    for (var it = 0; it < items.length; it++) {
-                        var itemEl = items[it];
-                        var optName = itemEl.getAttribute('title') || '';
-                        if (!optName) {
-                            var imgEl = itemEl.querySelector('img');
-                            if (imgEl) optName = imgEl.getAttribute('alt') || imgEl.getAttribute('title') || '';
-                        }
-                        if (!optName) {
-                            optName = (itemEl.innerText || '').split('\n')[0];
-                        }
-                        optName = optName.trim();
-                        var optLower = optName.toLowerCase();
-
-                        if (!optName || optName.length > 60 || seenOpts[optLower] ||
-                            optLower.indexOf('quantity') !== -1 || optLower.indexOf('số lượng') !== -1 ||
-                            optLower.indexOf('bảng kích cỡ') !== -1 || optLower.indexOf('size chart') !== -1 ||
-                            optLower.indexOf('hướng dẫn') !== -1) {
+                    // Lọc Top-level blocks: Loại bỏ phần tử con bị lồng bên trong block khác và popup/dialog
+                    var topBlocks = [];
+                    for (var i = 0; i < candidateBlocks.length; i++) {
+                        var b = candidateBlocks[i];
+                        var cls = (b.className || '').toString();
+                        if (cls.indexOf('sku-prop-content-item') !== -1 || 
+                            cls.indexOf('sku-prop-title') !== -1 ||
+                            cls.indexOf('sku-variable-') !== -1) {
                             continue;
                         }
-
-                        seenOpts[optLower] = true;
-                        var isSel = itemEl.classList.contains('sku-variable-name-selected') ||
-                                    itemEl.classList.contains('selected') ||
-                                    itemEl.classList.contains('sku-variable-size-selected');
-                        var isDis = itemEl.classList.contains('disabled');
-                        options.push({
-                            name: optName,
-                            selected: isSel,
-                            disabled: isDis
-                        });
+                        if (b.closest && b.closest('.next-dialog, .pdp-drawer, .sku-drawer, [style*="display: none"], [style*="display:none"], [hidden]')) {
+                            continue;
+                        }
+                        var isChild = false;
+                        for (var j = 0; j < candidateBlocks.length; j++) {
+                            if (i !== j && candidateBlocks[j].contains(b)) {
+                                isChild = true;
+                                break;
+                            }
+                        }
+                        if (!isChild) {
+                            topBlocks.push(b);
+                        }
                     }
 
-                    if (options.length > 0) {
-                        if (!groupName) groupName = 'Lớp ' + (layers.length + 1);
-                        var optKey = options.map(function(o){ return o.name.toLowerCase(); }).sort().join('|');
-                        if (!seenDomKeys[optKey]) {
-                            seenDomKeys[optKey] = true;
-                            layers.push({
-                                name: groupName,
-                                options: options
+                    var seenDomKeys = {};
+                    for (var bIdx = 0; bIdx < topBlocks.length; bIdx++) {
+                        var block = topBlocks[bIdx];
+
+                        // Tên lớp
+                        var titleEl = block.querySelector('.sku-prop-title, .pdp-mod-product-info-section-title, .section-title, h3, [class*="prop-title"]');
+                        var groupName = '';
+                        if (titleEl) {
+                            var fullT = titleEl.innerText || '';
+                            var subVal = titleEl.querySelector('.sku-name, [class*="selected"], span:not(:first-child)');
+                            if (subVal) fullT = fullT.replace(subVal.innerText, '');
+                            groupName = fullT.split(/[:：]/)[0].trim();
+                        }
+
+                        // Các tùy chọn trong lớp
+                        var items = block.querySelectorAll('.sku-variable-name, .sku-variable-size, .sku-name, .sku-prop-content-item, [class*="sku-variable-item"]');
+                        var options = [];
+                        var seenOpts = {};
+                        for (var it = 0; it < items.length; it++) {
+                            var itemEl = items[it];
+                            var optName = itemEl.getAttribute('title') || '';
+                            if (!optName) {
+                                var imgEl = itemEl.querySelector('img');
+                                if (imgEl) optName = imgEl.getAttribute('alt') || imgEl.getAttribute('title') || '';
+                            }
+                            if (!optName) {
+                                optName = (itemEl.innerText || '').split(/[\r\n]+/)[0];
+                            }
+                            optName = optName.trim();
+                            var optLower = optName.toLowerCase();
+
+                            if (!optName || optName.length > 60 || seenOpts[optLower] ||
+                                optLower.indexOf('quantity') !== -1 || optLower.indexOf('số lượng') !== -1 ||
+                                optLower.indexOf('bảng kích cỡ') !== -1 || optLower.indexOf('size chart') !== -1 ||
+                                optLower.indexOf('hướng dẫn') !== -1) {
+                                continue;
+                            }
+
+                            seenOpts[optLower] = true;
+                            var isSel = itemEl.classList.contains('sku-variable-name-selected') ||
+                                        itemEl.classList.contains('selected') ||
+                                        itemEl.classList.contains('sku-variable-size-selected');
+                            var isDis = itemEl.classList.contains('disabled');
+                            options.push({
+                                name: optName,
+                                selected: isSel,
+                                disabled: isDis
                             });
+                        }
+
+                        if (options.length > 0) {
+                            if (!groupName) groupName = 'Lớp ' + (layers.length + 1);
+                            var optKey = options.map(function(o){ return o.name.toLowerCase(); }).sort().join('|');
+                            if (!seenDomKeys[optKey]) {
+                                seenDomKeys[optKey] = true;
+                                layers.push({
+                                    name: groupName,
+                                    options: options
+                                });
+                            }
                         }
                     }
                 }
-            }
 
-            res.layers = layers;
+                res.layers = layers;
 
-            // 6. Kiểm tra nút Thêm vào giỏ
-            var addBtn = document.querySelector('button.add-to-cart-buy-now-btn, button.pdp-button_theme_orange, .pdp-button-add-to-cart');
-            if (!addBtn) {
-                res.isOutOfStock = true;
+                // 6. Kiểm tra nút Thêm vào giỏ
+                var addBtn = document.querySelector('button.add-to-cart-buy-now-btn, button.pdp-button_theme_orange, .pdp-button-add-to-cart');
+                if (!addBtn) {
+                    res.isOutOfStock = true;
+                }
+            } catch(e) {
+                console.error("Lỗi trích xuất JS:", e);
             }
 
             return res;
@@ -460,41 +464,45 @@ def add_sku_to_cart(url: str, selected_options: Optional[Union[str, List[str]]] 
 
         # 1. Click lần lượt từng lớp phân loại
         if targets:
-            clicked_summary = driver.execute_script('''
+            clicked_summary = driver.execute_script(r'''
                 var targets = arguments[0];
                 var clicked = [];
-                for (var t = 0; t < targets.length; t++) {
-                    var wanted = targets[t].trim().toLowerCase();
-                    var candidates = document.querySelectorAll(
-                        '.sku-variable-name, .sku-variable-size, .sku-name, [class*="sku-variable-"], .sku-prop-content-item, [title]'
-                    );
-                    for (var i = 0; i < candidates.length; i++) {
-                        var el = candidates[i];
-                        if (el.offsetParent === null) continue;
+                try {
+                    for (var t = 0; t < targets.length; t++) {
+                        var wanted = targets[t].trim().toLowerCase();
+                        var candidates = document.querySelectorAll(
+                            '.sku-variable-name, .sku-variable-size, .sku-name, [class*="sku-variable-"], .sku-prop-content-item, [title]'
+                        );
+                        for (var i = 0; i < candidates.length; i++) {
+                            var el = candidates[i];
+                            if (el.offsetParent === null) continue;
 
-                        var txt = el.getAttribute('title') || '';
-                        if (!txt) {
-                            var img = el.querySelector('img');
-                            if (img) txt = img.getAttribute('alt') || img.getAttribute('title') || '';
-                        }
-                        if (!txt) {
-                            txt = (el.innerText || '').split('\n')[0];
-                        }
-                        txt = txt.trim().toLowerCase();
+                            var txt = el.getAttribute('title') || '';
+                            if (!txt) {
+                                var img = el.querySelector('img');
+                                if (img) txt = img.getAttribute('alt') || img.getAttribute('title') || '';
+                            }
+                            if (!txt) {
+                                txt = (el.innerText || '').split(/[\r\n]+/)[0];
+                            }
+                            txt = txt.trim().toLowerCase();
 
-                        if (txt === wanted || (txt.length >= 3 && wanted.indexOf(txt) === 0) || (wanted.length >= 3 && txt.indexOf(wanted) === 0)) {
-                            el.click();
-                            clicked.push(targets[t]);
-                            break;
+                            if (txt === wanted || (txt.length >= 3 && wanted.indexOf(txt) === 0) || (wanted.length >= 3 && txt.indexOf(wanted) === 0)) {
+                                el.click();
+                                clicked.push(targets[t]);
+                                break;
+                            }
                         }
                     }
+                } catch(e) {
+                    console.error("Lỗi click phân loại:", e);
                 }
                 return clicked;
             ''', targets)
             time.sleep(0.35)
 
         # 2. Click nút 'Thêm vào giỏ hàng'
-        add_result = driver.execute_script('''
+        add_result = driver.execute_script(r'''
             var btns = document.querySelectorAll('button, a, div[role="button"]');
             for (var i = 0; i < btns.length; i++) {
                 var b = btns[i];
@@ -515,7 +523,7 @@ def add_sku_to_cart(url: str, selected_options: Optional[Union[str, List[str]]] 
 
         # 3. Chờ xác nhận thành công
         for _ in range(15):
-            success_check = driver.execute_script('''
+            success_check = driver.execute_script(r'''
                 var bodyText = document.body ? document.body.innerText : '';
                 var hasSuccess = bodyText.indexOf('Added to cart successfully') !== -1 ||
                                  bodyText.indexOf('Thêm vào giỏ hàng thành công') !== -1 ||
