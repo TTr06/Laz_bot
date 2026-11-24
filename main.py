@@ -43,7 +43,7 @@ load_dotenv()
 import database
 import cookie_manager
 from bot import create_bot_app
-from subscriber_manager import get_subscribers, is_auto_track_enabled
+from database import get_subscribers, is_auto_track_enabled
 from dashboard import print_cli, dashboard
 from web_server import web_server
 
@@ -373,7 +373,7 @@ class LazBotMainCLI(CmdLineInterface):
         print("Tạm biệt!\n")
 
     # --------------------------------------------------------------------------
-    # CÁC HÀM XỬ LÝ LỆNH HOST CLI (ĐẦY ĐỦ TỪ cli.py & host_cli.cpp)
+    # CÁC HÀM XỬ LÝ LỆNH HOST CLI
     # --------------------------------------------------------------------------
     def cmd_help(self, argv: List[str], argc: int):
         print("""
@@ -737,10 +737,35 @@ DANH SÁCH CÁC LỆNH HỖ TRỢ TRÊN HOST CLI:
     # ĐIỀU HÀNH CHÍNH (RUN)
     # --------------------------------------------------------------------------
     def run(self, init_argv: Optional[List[str]] = None):
+        # 0. Chế độ chạy ngầm / Server daemon (không mở console nhập lệnh, phù hợp Termux/VPS/nohup)
+        is_daemon = bool(init_argv and any(arg in init_argv for arg in ("--bot", "--daemon", "-d", "--service")))
+        if is_daemon:
+            self.init_console()
+            self.init_cmd()
+            self.start_background_bot()
+
+            enable_web = bool(init_argv and any(arg in init_argv for arg in ("--web", "-w"))) or (os.getenv("ENABLE_WEB_CLI", "").lower() in ("true", "1", "yes"))
+            if enable_web:
+                web_port = 8080
+                for i, arg in enumerate(init_argv or []):
+                    if arg in ("--port", "-p") and i + 1 < len(init_argv) and init_argv[i + 1].isdigit():
+                        web_port = int(init_argv[i + 1])
+                web_server.set_cli(self)
+                web_server.start(web_port)
+                print(f"[OK] Đã kích hoạt Web CLI Console tại: http://{web_server.lan_ip}:{web_port}\n")
+
+            print("[*] Bot và Lịch quét đang chạy ở chế độ nền (Daemon). Nhấn Ctrl+C để dừng.\n")
+            try:
+                while True:
+                    time.sleep(1)
+            except (KeyboardInterrupt, SystemExit):
+                self.do_quit()
+            return
+
         # 1. Nếu có tham số dòng lệnh một lần (One-shot CLI command)
         if init_argv and len(init_argv) > 1:
             first_arg = init_argv[1].lower()
-            if first_arg not in ("--no-bot", "--web", "-w"):
+            if first_arg not in ("--no-bot", "--web", "-w", "--bot", "--daemon", "-d", "--service"):
                 self.init_console()
                 self.init_cmd()
                 if first_arg in self.cmd_do_func:

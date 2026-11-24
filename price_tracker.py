@@ -30,7 +30,7 @@ from anti_detect import (
     safe_get,
     COOKIES_FILE,
 )
-from target_price_manager import should_notify_price_change, get_target_price
+from database import should_notify_price_change, get_target_price
 from cart_api import scrape_cart_via_requests
 import database
 

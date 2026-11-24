@@ -52,7 +52,7 @@ from price_tracker import (
     format_cart_messages,
     format_changes_alert,
 )
-from target_price_manager import (
+from database import (
     parse_user_price,
     set_target_price,
     remove_target_price,
@@ -60,8 +60,6 @@ from target_price_manager import (
     get_all_target_prices,
     get_target_price,
     find_product_by_query,
-)
-from subscriber_manager import (
     add_subscriber,
     remove_subscriber,
     get_subscribers,

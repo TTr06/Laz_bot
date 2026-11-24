@@ -61,6 +61,12 @@ Chạy đồng thời **Father Bot Telegram + Auto Scheduler** trong luồng ng�
 python main.py
 ```
 
+*Chế độ chạy ngầm liên tục không cần bàn phím tương tác (dành cho VPS / Server / Termux):*
+```bash
+python main.py --bot
+# hoặc: python main.py --daemon
+```
+
 *Nếu chỉ muốn dùng Host CLI tra cứu nhanh (One-shot command):*
 ```bash
 python main.py prices            # Xem bảng giá các mặt hàng trong giỏ
@@ -91,7 +97,7 @@ Sau khi bot chạy, mở Telegram và gõ lệnh `/start` vào bot của bạn �
 
 ---
 
-## 💻 Danh Sách Lệnh Host CLI (main.py / cli.py)
+## 💻 Danh Sách Lệnh Host CLI (main.py)
 
 | Nhóm chức năng | Lệnh | Mô tả |
 | :--- | :--- | :--- |

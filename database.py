@@ -792,5 +792,43 @@ def set_auto_track_enabled_db(enabled: bool) -> None:
         conn.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('auto_track_enabled', ?)", (val,))
 
 
+def find_product_by_query(query: str) -> Optional[Tuple[str, Dict[str, Any], int]]:
+    """
+    Tìm sản phẩm theo STT hoặc từ khóa tên/SKU.
+    Trả về (pid, product_dict, stt)
+    """
+    res = find_product_by_stt_or_query(query)
+    if not res:
+        return None
+
+    pid = res["pid"]
+    stt = res["stt"]
+    p_data = {
+        "name": res["name"],
+        "sku": res["sku"],
+        "current_price": res["price"],
+        "base_price": res["base_price"],
+        "valid": bool(res["valid"]),
+        "url": res["url"],
+        "stt": stt
+    }
+    return pid, p_data, stt
+
+
+# Aliases thuận tiện cho toàn hệ thống
+get_subscribers = get_subscribers_db
+add_subscriber = add_subscriber_db
+remove_subscriber = remove_subscriber_db
+is_auto_track_enabled = is_auto_track_enabled_db
+set_auto_track_enabled = set_auto_track_enabled_db
+
+set_target_price = set_target_price_db
+remove_target_price = remove_target_price_db
+clear_all_target_prices = clear_all_target_prices_db
+get_all_target_prices = get_all_target_prices_db
+get_target_price = get_target_price_db
+should_notify_price_change = should_notify_price_change_db
+
+
 # Khởi tạo database tự động khi load module
 init_db()

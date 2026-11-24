@@ -24,7 +24,7 @@ from typing import Optional, Set
 from aiohttp import web
 
 import database
-from subscriber_manager import get_subscribers, is_auto_track_enabled
+from database import get_subscribers, is_auto_track_enabled
 from dashboard import add_log_listener, remove_log_listener
 from rich.console import Console
 

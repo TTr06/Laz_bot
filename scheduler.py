@@ -12,7 +12,7 @@ import random
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
-from subscriber_manager import get_subscribers, is_auto_track_enabled
+from database import get_subscribers, is_auto_track_enabled
 from price_tracker import track_prices, format_changes_alert
 from anti_detect import close_shared_driver
 from dashboard import (
