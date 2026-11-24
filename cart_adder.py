@@ -19,6 +19,101 @@ logger = logging.getLogger(__name__)
 LAZADA_URL_REGEX = r'https?://(?:[a-zA-Z0-9_\-]+\.)?lazada\.vn/[^\s]+'
 
 
+def clean_opt_name(text: str) -> str:
+    """Làm sạch tên tùy chọn phân loại (loại bỏ xuống dòng, giá tiền phụ, nhãn hết hàng dính kèm)"""
+    if not text:
+        return ""
+    first_line = text.strip().split("\n")[0].strip()
+    clean = re.sub(r'\s*[\d\.,]+\s*(?:₫|đ|vnd|k)\b.*$', '', first_line, flags=re.IGNORECASE).strip()
+    clean = re.sub(r'\s*[\(\[]\s*(?:hết hàng|tạm hết|out of stock)\s*[\)\]]', '', clean, flags=re.IGNORECASE).strip()
+    clean = re.sub(r'\s+', ' ', clean)
+    return clean
+
+
+def clean_and_deduplicate_layers(raw_layers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Chuẩn hóa và khử triệt để trùng lặp giữa các lớp phân loại (Layers):
+    - Khử các lớp trùng lặp nội dung do DOM lồng nhau hoặc modal drawer.
+    - Loại bỏ các lớp rác (Bảng kích cỡ, hướng dẫn chọn size, số lượng...).
+    - Khử trùng lặp các options trong cùng 1 lớp.
+    """
+    cleaned_layers: List[Dict[str, Any]] = []
+    seen_option_fingerprints = set()
+    seen_layer_names = set()
+
+    for layer in raw_layers:
+        raw_name = (layer.get("name") or "").strip()
+        # Loại bỏ các tiền tố/hậu tố thừa (ví dụ: "Nhóm màu: Đen" -> "Nhóm màu")
+        clean_name = re.sub(r'[:：].*$', '', raw_name).strip()
+        if not clean_name:
+            clean_name = f"Lớp {len(cleaned_layers) + 1}"
+
+        lower_name = clean_name.lower()
+        if any(w in lower_name for w in ["bảng kích cỡ", "size chart", "size guide", "hướng dẫn chọn size", "số lượng", "quantity"]):
+            continue
+
+        raw_opts = layer.get("options") or []
+        valid_opts: List[Dict[str, Any]] = []
+        seen_opt_names = set()
+
+        for opt in raw_opts:
+            if isinstance(opt, str):
+                o_name = opt
+            elif isinstance(opt, dict):
+                o_name = opt.get("name", "")
+            else:
+                continue
+
+            o_clean = clean_opt_name(o_name)
+            o_lower = o_clean.lower()
+            if not o_clean or len(o_clean) > 60 or o_lower in seen_opt_names:
+                continue
+            if any(w in o_lower for w in ["bảng kích cỡ", "size chart", "size guide", "hướng dẫn", "quantity", "số lượng", "xem thêm"]):
+                continue
+
+            seen_opt_names.add(o_lower)
+            is_sel = opt.get("selected", False) if isinstance(opt, dict) else False
+            is_dis = opt.get("disabled", False) if isinstance(opt, dict) else False
+            valid_opts.append({
+                "name": o_clean,
+                "selected": is_sel,
+                "disabled": is_dis
+            })
+
+        if not valid_opts:
+            continue
+
+        # Fingerprint đại diện cho tập options đã sắp xếp
+        fingerprint = tuple(sorted(o["name"].lower() for o in valid_opts))
+
+        # Nếu tập options đã xuất hiện ở lớp trước -> Trùng lặp hoàn toàn -> Bỏ qua
+        if fingerprint in seen_option_fingerprints:
+            continue
+
+        # Nếu trùng tên lớp và có overlap tùy chọn -> Bỏ qua
+        if lower_name in seen_layer_names:
+            overlap = False
+            for exist_layer in cleaned_layers:
+                if exist_layer["name"].lower() == lower_name:
+                    exist_opts = {o["name"].lower() for o in exist_layer["options"]}
+                    cur_opts = {o["name"].lower() for o in valid_opts}
+                    if exist_opts & cur_opts:
+                        overlap = True
+                        break
+            if overlap:
+                continue
+
+        seen_option_fingerprints.add(fingerprint)
+        seen_layer_names.add(lower_name)
+
+        cleaned_layers.append({
+            "name": clean_name,
+            "options": valid_opts
+        })
+
+    return cleaned_layers
+
+
 def extract_lazada_url(text: str) -> Optional[str]:
     """Tìm và bóc tách link Lazada trong tin nhắn"""
     if not text:
@@ -121,24 +216,52 @@ def fetch_product_details(url: str, headless: bool = True) -> Dict[str, Any]:
             // 5. Trích xuất từng lớp phân loại (Layers: Màu sắc, Size, Chất liệu...)
             var layers = [];
 
-            // A. Tìm trong dữ liệu module JavaScript của Lazada
+            // A. Tìm sâu trong dữ liệu module JavaScript của Lazada (Deep search)
+            function getSkuBase() {
+                try {
+                    if (window.__moduleData__) {
+                        var md = window.__moduleData__;
+                        if (md.data && md.data.root && md.data.root.fields && md.data.root.fields.skuBase) return md.data.root.fields.skuBase;
+                        if (md.data && md.data.fields && md.data.fields.skuBase) return md.data.fields.skuBase;
+                        if (md.fields && md.fields.skuBase) return md.fields.skuBase;
+                    }
+                } catch(e) {}
+                try {
+                    if (window.__INIT_DATA__) {
+                        var id = window.__INIT_DATA__;
+                        if (id.data && id.data.root && id.data.root.fields && id.data.root.fields.skuBase) return id.data.root.fields.skuBase;
+                        if (id.data && id.data.fields && id.data.fields.skuBase) return id.data.fields.skuBase;
+                        if (id.module && id.module.data && id.module.data.root && id.module.data.root.fields && id.module.data.root.fields.skuBase) return id.module.data.root.fields.skuBase;
+                        if (id.module && id.module.data && id.module.data.fields && id.module.data.fields.skuBase) return id.module.data.fields.skuBase;
+                    }
+                } catch(e) {}
+                try {
+                    if (window.pageData && window.pageData.skuBase) return window.pageData.skuBase;
+                    if (window.g_config && window.g_config.skuBase) return window.g_config.skuBase;
+                } catch(e) {}
+                return null;
+            }
+
             try {
-                var modData = window.__moduleData__ || (window.__INIT_DATA__ && window.__INIT_DATA__.module) || null;
-                var skuBase = null;
-                if (modData && modData.data && modData.data.root && modData.data.root.fields) {
-                    skuBase = modData.data.root.fields.skuBase;
-                }
+                var skuBase = getSkuBase();
                 if (skuBase && skuBase.properties && Array.isArray(skuBase.properties)) {
+                    var seenPropNames = {};
                     for (var p = 0; p < skuBase.properties.length; p++) {
                         var prop = skuBase.properties[p];
-                        var propName = (prop.name || 'Lớp ' + (p + 1)).trim();
+                        var pName = (prop.name || '').replace(/[:：]/g, '').trim();
+                        if (!pName) pName = 'Lớp ' + (layers.length + 1);
+                        var pLower = pName.toLowerCase();
+                        if (seenPropNames[pLower]) continue;
+
                         var options = [];
+                        var seenOpt = {};
                         if (prop.values && Array.isArray(prop.values)) {
                             for (var v = 0; v < prop.values.length; v++) {
-                                var valName = (prop.values[v].name || '').trim();
-                                if (valName) {
+                                var vName = (prop.values[v].name || '').trim();
+                                if (vName && !seenOpt[vName.toLowerCase()]) {
+                                    seenOpt[vName.toLowerCase()] = true;
                                     options.push({
-                                        name: valName,
+                                        name: vName,
                                         selected: false,
                                         disabled: false
                                     });
@@ -146,8 +269,9 @@ def fetch_product_details(url: str, headless: bool = True) -> Dict[str, Any]:
                             }
                         }
                         if (options.length > 0) {
+                            seenPropNames[pLower] = true;
                             layers.push({
-                                name: propName,
+                                name: pName,
                                 options: options
                             });
                         }
@@ -157,80 +281,99 @@ def fetch_product_details(url: str, headless: bool = True) -> Dict[str, Any]:
 
             // B. Trích xuất trực tiếp từ các khối DOM của từng lớp (nếu JS chưa có)
             if (layers.length === 0) {
-                var propBlocks = document.querySelectorAll(
-                    '.sku-prop, .pdp-mod-product-info-section-sku, .pdp-block__sku, [class*="sku-prop"]'
+                var candidateBlocks = document.querySelectorAll(
+                    '.sku-prop, .pdp-mod-product-info-section-sku > div, .pdp-block__sku'
                 );
+                if (candidateBlocks.length === 0) {
+                    candidateBlocks = document.querySelectorAll('[class*="sku-prop"]');
+                }
 
-                for (var b = 0; b < propBlocks.length; b++) {
-                    var block = propBlocks[b];
+                // Lọc Top-level blocks: Loại bỏ phần tử con bị lồng bên trong block khác và popup/dialog
+                var topBlocks = [];
+                for (var i = 0; i < candidateBlocks.length; i++) {
+                    var b = candidateBlocks[i];
+                    var cls = (b.className || '').toString();
+                    if (cls.indexOf('sku-prop-content-item') !== -1 || 
+                        cls.indexOf('sku-prop-title') !== -1 ||
+                        cls.indexOf('sku-variable-') !== -1) {
+                        continue;
+                    }
+                    if (b.closest('.next-dialog, .pdp-drawer, .sku-drawer, [style*="display: none"], [style*="display:none"], [hidden]')) {
+                        continue;
+                    }
+                    var isChild = false;
+                    for (var j = 0; j < candidateBlocks.length; j++) {
+                        if (i !== j && candidateBlocks[j].contains(b)) {
+                            isChild = true;
+                            break;
+                        }
+                    }
+                    if (!isChild) {
+                        topBlocks.push(b);
+                    }
+                }
 
-                    // Tên lớp (ví dụ: "Nhóm màu", "Kích cỡ", "Chất liệu")
-                    var titleEl = block.querySelector(
-                        '.sku-prop-title, .pdp-mod-product-info-section-title, .section-title, h3, [class*="prop-title"]'
-                    );
+                var seenDomKeys = {};
+                for (var bIdx = 0; bIdx < topBlocks.length; bIdx++) {
+                    var block = topBlocks[bIdx];
+
+                    // Tên lớp
+                    var titleEl = block.querySelector('.sku-prop-title, .pdp-mod-product-info-section-title, .section-title, h3, [class*="prop-title"]');
                     var groupName = '';
                     if (titleEl) {
-                        groupName = (titleEl.innerText || '').replace(/[:：]/g, '').trim();
+                        var fullT = titleEl.innerText || '';
+                        var subVal = titleEl.querySelector('.sku-name, [class*="selected"], span:not(:first-child)');
+                        if (subVal) fullT = fullT.replace(subVal.innerText, '');
+                        groupName = fullT.split(/[:：]/)[0].trim();
                     }
 
                     // Các tùy chọn trong lớp
-                    var items = block.querySelectorAll(
-                        '.sku-variable-name, .sku-variable-size, .sku-name, .sku-prop-content-item, [class*="sku-variable-item"], [class*="sku-variable-name"]'
-                    );
-
+                    var items = block.querySelectorAll('.sku-variable-name, .sku-variable-size, .sku-name, .sku-prop-content-item, [class*="sku-variable-item"]');
                     var options = [];
                     var seenOpts = {};
                     for (var it = 0; it < items.length; it++) {
                         var itemEl = items[it];
-                        var optName = (itemEl.innerText || itemEl.getAttribute('title') || '').trim();
-                        if (optName && !seenOpts[optName] && optName.length < 50 &&
-                            optName.indexOf('Quantity') === -1 && optName.indexOf('Số lượng') === -1) {
-                            seenOpts[optName] = true;
-                            var isSel = itemEl.classList.contains('sku-variable-name-selected') ||
-                                        itemEl.classList.contains('selected') ||
-                                        itemEl.classList.contains('sku-variable-size-selected');
-                            var isDis = itemEl.classList.contains('disabled');
-                            options.push({
-                                name: optName,
-                                selected: isSel,
-                                disabled: isDis
-                            });
+                        var optName = itemEl.getAttribute('title') || '';
+                        if (!optName) {
+                            var imgEl = itemEl.querySelector('img');
+                            if (imgEl) optName = imgEl.getAttribute('alt') || imgEl.getAttribute('title') || '';
                         }
+                        if (!optName) {
+                            optName = (itemEl.innerText || '').split('\n')[0];
+                        }
+                        optName = optName.trim();
+                        var optLower = optName.toLowerCase();
+
+                        if (!optName || optName.length > 60 || seenOpts[optLower] ||
+                            optLower.indexOf('quantity') !== -1 || optLower.indexOf('số lượng') !== -1 ||
+                            optLower.indexOf('bảng kích cỡ') !== -1 || optLower.indexOf('size chart') !== -1 ||
+                            optLower.indexOf('hướng dẫn') !== -1) {
+                            continue;
+                        }
+
+                        seenOpts[optLower] = true;
+                        var isSel = itemEl.classList.contains('sku-variable-name-selected') ||
+                                    itemEl.classList.contains('selected') ||
+                                    itemEl.classList.contains('sku-variable-size-selected');
+                        var isDis = itemEl.classList.contains('disabled');
+                        options.push({
+                            name: optName,
+                            selected: isSel,
+                            disabled: isDis
+                        });
                     }
 
                     if (options.length > 0) {
                         if (!groupName) groupName = 'Lớp ' + (layers.length + 1);
-                        layers.push({
-                            name: groupName,
-                            options: options
-                        });
+                        var optKey = options.map(function(o){ return o.name.toLowerCase(); }).sort().join('|');
+                        if (!seenDomKeys[optKey]) {
+                            seenDomKeys[optKey] = true;
+                            layers.push({
+                                name: groupName,
+                                options: options
+                            });
+                        }
                     }
-                }
-            }
-
-            // C. Fallback toàn cục nếu không gom được khối
-            if (layers.length === 0) {
-                var globalItems = document.querySelectorAll('.sku-variable-name, .sku-variable-size, .sku-name, [class*="sku-variable-"]');
-                var fallbackOpts = [];
-                var seenGlobal = {};
-                for (var g = 0; g < globalItems.length; g++) {
-                    var gEl = globalItems[g];
-                    var gName = (gEl.innerText || gEl.getAttribute('title') || '').trim();
-                    if (gName && !seenGlobal[gName] && gName.length < 50 &&
-                        gName.indexOf('Quantity') === -1 && gName.indexOf('Số lượng') === -1) {
-                        seenGlobal[gName] = true;
-                        fallbackOpts.push({
-                            name: gName,
-                            selected: false,
-                            disabled: false
-                        });
-                    }
-                }
-                if (fallbackOpts.length > 0) {
-                    layers.push({
-                        name: 'Phân loại',
-                        options: fallbackOpts
-                    });
                 }
             }
 
@@ -255,7 +398,8 @@ def fetch_product_details(url: str, headless: bool = True) -> Dict[str, Any]:
         title = result.get("title") or "Sản phẩm Lazada"
         price = result.get("price") or "N/A"
         original_price = result.get("originalPrice") or ""
-        layers = result.get("layers") or []
+        raw_layers = result.get("layers") or []
+        layers = clean_and_deduplicate_layers(raw_layers)
         image = result.get("image") or ""
         if image.startswith("//"):
             image = "https:" + image
@@ -320,14 +464,25 @@ def add_sku_to_cart(url: str, selected_options: Optional[Union[str, List[str]]] 
                 var targets = arguments[0];
                 var clicked = [];
                 for (var t = 0; t < targets.length; t++) {
-                    var wanted = targets[t].toLowerCase();
+                    var wanted = targets[t].trim().toLowerCase();
                     var candidates = document.querySelectorAll(
                         '.sku-variable-name, .sku-variable-size, .sku-name, [class*="sku-variable-"], .sku-prop-content-item, [title]'
                     );
                     for (var i = 0; i < candidates.length; i++) {
                         var el = candidates[i];
-                        var txt = (el.innerText || el.getAttribute('title') || '').trim().toLowerCase();
-                        if (txt === wanted) {
+                        if (el.offsetParent === null) continue;
+
+                        var txt = el.getAttribute('title') || '';
+                        if (!txt) {
+                            var img = el.querySelector('img');
+                            if (img) txt = img.getAttribute('alt') || img.getAttribute('title') || '';
+                        }
+                        if (!txt) {
+                            txt = (el.innerText || '').split('\n')[0];
+                        }
+                        txt = txt.trim().toLowerCase();
+
+                        if (txt === wanted || (txt.length >= 3 && wanted.indexOf(txt) === 0) || (wanted.length >= 3 && txt.indexOf(wanted) === 0)) {
                             el.click();
                             clicked.push(targets[t]);
                             break;
