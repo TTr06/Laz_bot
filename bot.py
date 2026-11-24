@@ -206,13 +206,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 def _render_product_selection(session: dict) -> Tuple[str, InlineKeyboardMarkup]:
-    """Tạo giao diện hiển thị thông tin sản phẩm và bàn phím chọn từng lớp phân loại"""
+    """Tạo giao diện hiển thị thông tin sản phẩm, danh sách phân loại & tổ hợp phân loại"""
     title = session.get("title") or "Sản phẩm Lazada"
     price = session.get("price") or "N/A"
     orig_price = session.get("orig_price")
     layers = session.get("layers") or []
+    combinations = session.get("combinations") or []
     current_step = session.get("current_step", 0)
     chosen_options = session.get("chosen_options", [])
+    view_mode = session.get("view_mode") or ("combo" if (len(layers) <= 1 or len(combinations) <= 8) else "layers")
+    combo_page = session.get("combo_page", 0)
 
     price_line = f"💰 <b>Giá:</b> <code>{price}</code>"
     if orig_price and orig_price != price:
@@ -224,28 +227,40 @@ def _render_product_selection(session: dict) -> Tuple[str, InlineKeyboardMarkup]
         f"{price_line}\n"
     )
 
-    # Hiển thị tóm tắt tất cả các lớp phân loại hiện có
+    # 1. Hiển thị tóm tắt tất cả các lớp phân loại
     if layers:
         layer_summary = ["📋 <b>Các lớp phân loại:</b>"]
         for idx, lyr in enumerate(layers):
             lyr_name = lyr.get("name", f"Lớp {idx+1}")
-            opts = [o.get("name", "") for o in lyr.get("options", [])[:6]]
-            opts_str = ", ".join(opts)
-            if len(lyr.get("options", [])) > 6:
-                opts_str += ", ..."
+            opts = [o.get("name", "") for o in lyr.get("options", [])]
+            opts_str = ", ".join(opts[:8])
+            if len(opts) > 8:
+                opts_str += f", ... (+{len(opts)-8})"
             layer_summary.append(f"• <b>{lyr_name}:</b> {opts_str}")
         header += "\n" + "\n".join(layer_summary) + "\n"
 
-    # Hiển thị các lựa chọn đã chốt ở các bước trước (nếu có)
+    # 2. Hiển thị danh sách các tổ hợp phân loại (SKU)
+    if combinations and len(layers) > 1:
+        combo_summary = [f"🧩 <b>Tổ hợp phân loại ({len(combinations)} tổ hợp):</b>"]
+        for c_idx, c in enumerate(combinations[:8]):
+            c_name = c.get("name", "")
+            c_price = f" - <code>{c['price']}</code>" if c.get("price") else ""
+            c_stock = " <i>(Hết hàng)</i>" if not c.get("inStock", True) else ""
+            combo_summary.append(f" {c_idx+1}. {c_name}{c_price}{c_stock}")
+        if len(combinations) > 8:
+            combo_summary.append(f" ... và <b>{len(combinations)-8}</b> tổ hợp khác.")
+        header += "\n" + "\n".join(combo_summary) + "\n"
+
+    # 3. Hiển thị các lựa chọn đã chốt (trong chế độ chọn từng lớp)
     if chosen_options:
         chosen_lines = []
         for c_idx, c_val in enumerate(chosen_options):
-            l_name = layers[c_idx].get("name", f"Lớp {c_idx+1}")
+            l_name = layers[c_idx].get("name", f"Lớp {c_idx+1}") if c_idx < len(layers) else f"Lớp {c_idx+1}"
             chosen_lines.append(f"✅ <i>{l_name}:</i> <b>{c_val}</b>")
         header += "\n" + "\n".join(chosen_lines) + "\n"
 
     # Nếu sản phẩm không có phân loại nào
-    if not layers:
+    if not layers and not combinations:
         text = header + "\n<i>(Sản phẩm có 1 phân loại mặc định)</i>"
         keyboard = [
             [InlineKeyboardButton("🛒 Thêm vào giỏ hàng ngay", callback_data="addcart:default")],
@@ -253,7 +268,47 @@ def _render_product_selection(session: dict) -> Tuple[str, InlineKeyboardMarkup]
         ]
         return text, InlineKeyboardMarkup(keyboard)
 
-    # Hiển thị các nút bấm chọn cho lớp hiện tại
+    # Chế độ 1: Chọn trực tiếp theo tổ hợp phân loại
+    if view_mode == "combo" and combinations:
+        text = header + "\n👉 <b>Chọn tổ hợp để thêm vào giỏ:</b>"
+        keyboard = []
+        PAGE_SIZE = 8
+        total_pages = max(1, (len(combinations) + PAGE_SIZE - 1) // PAGE_SIZE)
+        combo_page = max(0, min(combo_page, total_pages - 1))
+        start_idx = combo_page * PAGE_SIZE
+        page_combos = combinations[start_idx:start_idx + PAGE_SIZE]
+
+        row = []
+        for idx_offset, c in enumerate(page_combos):
+            actual_idx = start_idx + idx_offset
+            c_name = c.get("name", "")
+            btn_text = c_name
+            if len(btn_text) > 28:
+                btn_text = btn_text[:26] + ".."
+            row.append(InlineKeyboardButton(btn_text, callback_data=f"addcart:combo:{actual_idx}"))
+            if len(row) == 2 or any(len(x.get("name", "")) > 18 for x in page_combos):
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+
+        if total_pages > 1:
+            page_nav = []
+            if combo_page > 0:
+                page_nav.append(InlineKeyboardButton("⬅️ Trước", callback_data=f"addcart:combopage:{combo_page - 1}"))
+            page_nav.append(InlineKeyboardButton(f"📄 {combo_page + 1}/{total_pages}", callback_data="addcart:noop"))
+            if combo_page < total_pages - 1:
+                page_nav.append(InlineKeyboardButton("Sau ➡️", callback_data=f"addcart:combopage:{combo_page + 1}"))
+            keyboard.append(page_nav)
+
+        nav_row = []
+        if len(layers) > 1:
+            nav_row.append(InlineKeyboardButton("🔀 Chọn theo từng lớp", callback_data="addcart:toggle_mode"))
+        nav_row.append(InlineKeyboardButton("❌ Hủy", callback_data="addcart:cancel"))
+        keyboard.append(nav_row)
+        return text, InlineKeyboardMarkup(keyboard)
+
+    # Chế độ 2: Chọn từng bước qua từng lớp
     cur_layer = layers[current_step]
     cur_name = cur_layer.get("name", f"Lớp {current_step+1}")
     total_steps = len(layers)
@@ -266,16 +321,17 @@ def _render_product_selection(session: dict) -> Tuple[str, InlineKeyboardMarkup]
     for o_idx, opt in enumerate(cur_layer.get("options", [])):
         opt_name = opt.get("name", "")
         row.append(InlineKeyboardButton(opt_name, callback_data=f"addcart:step:{current_step}:{o_idx}"))
-        if len(row) == 2:
+        if len(row) == 2 or len(opt_name) > 18:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
 
-    # Hàng nút điều hướng
     nav_row = []
     if current_step > 0:
         nav_row.append(InlineKeyboardButton("⬅️ Quay lại", callback_data="addcart:back"))
+    if combinations and len(layers) > 1:
+        nav_row.append(InlineKeyboardButton("🧩 Xem danh sách tổ hợp", callback_data="addcart:toggle_mode"))
     nav_row.append(InlineKeyboardButton("❌ Hủy", callback_data="addcart:cancel"))
     keyboard.append(nav_row)
 
@@ -283,7 +339,7 @@ def _render_product_selection(session: dict) -> Tuple[str, InlineKeyboardMarkup]
 
 
 async def handle_lazada_product_link(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> None:
-    """Xử lý link sản phẩm Lazada: lấy thông tin chi tiết và hiển thị chọn từng lớp phân loại"""
+    """Xử lý link sản phẩm Lazada: lấy thông tin chi tiết và hiển thị phân loại cùng tổ hợp"""
     auto_register_user(update)
     msg = update.effective_message
     if not msg:
@@ -303,6 +359,7 @@ async def handle_lazada_product_link(update: Update, context: ContextTypes.DEFAU
     price = details.get("price") or "N/A"
     orig_price = details.get("original_price")
     layers = details.get("layers") or []
+    combinations = details.get("combinations") or []
     prod_url = details.get("url") or url
 
     # Khởi tạo phiên chọn sản phẩm trong context
@@ -312,8 +369,11 @@ async def handle_lazada_product_link(update: Update, context: ContextTypes.DEFAU
         "price": price,
         "orig_price": orig_price,
         "layers": layers,
+        "combinations": combinations,
         "current_step": 0,
-        "chosen_options": []
+        "chosen_options": [],
+        "view_mode": "combo" if (len(layers) <= 1 or len(combinations) <= 8) else "layers",
+        "combo_page": 0
     }
     context.user_data["add_cart_session"] = session
 
@@ -322,7 +382,7 @@ async def handle_lazada_product_link(update: Update, context: ContextTypes.DEFAU
 
 
 async def handle_add_cart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Xử lý điều hướng khi người dùng chọn từng lớp phân loại để thêm vào giỏ"""
+    """Xử lý điều hướng khi người dùng chọn phân loại hoặc tổ hợp để thêm vào giỏ"""
     query = update.callback_query
     if not query:
         return
@@ -344,8 +404,32 @@ async def handle_add_cart_callback(update: Update, context: ContextTypes.DEFAULT
         return
 
     layers = session.get("layers", [])
+    combinations = session.get("combinations", [])
     current_step = session.get("current_step", 0)
     chosen_options = session.get("chosen_options", [])
+
+    if action == "noop":
+        return
+
+    if action == "toggle_mode":
+        cur_mode = session.get("view_mode", "combo")
+        session["view_mode"] = "layers" if cur_mode == "combo" else "combo"
+        text, markup = _render_product_selection(session)
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            pass
+        return
+
+    if action.startswith("combopage:"):
+        page = int(action.split(":")[1])
+        session["combo_page"] = page
+        text, markup = _render_product_selection(session)
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            pass
+        return
 
     if action == "back":
         if current_step > 0:
@@ -353,11 +437,52 @@ async def handle_add_cart_callback(update: Update, context: ContextTypes.DEFAULT
             if session["chosen_options"]:
                 session["chosen_options"].pop()
         text, markup = _render_product_selection(session)
-        await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            pass
         return
 
+    # Chọn trực tiếp 1 tổ hợp phân loại
+    if action.startswith("combo:"):
+        combo_idx = int(action.split(":")[1])
+        if combo_idx < len(combinations):
+            chosen_combo = combinations[combo_idx]
+            chosen_parts = chosen_combo.get("parts") or [chosen_combo["name"]]
+            session["chosen_options"] = chosen_parts
+
+        url = session.get("url")
+        title = session.get("title")
+        price = session.get("price")
+        chosen = session.get("chosen_options", [])
+        sku_display = " / ".join(chosen) if chosen else ""
+        sku_text = f" [<b>{sku_display}</b>]" if sku_display else ""
+
+        await query.edit_message_text(f"⏳ Đang thêm{sku_text} vào giỏ hàng Lazada...", parse_mode="HTML")
+
+        loop = asyncio.get_running_loop()
+        res = await loop.run_in_executor(None, lambda: add_sku_to_cart(url, chosen, headless=True))
+
+        if res.get("status") == "ok":
+            msg_text = (
+                f"✅ <b>ĐÃ THÊM VÀO GIỎ HÀNG THÀNH CÔNG!</b>\n\n"
+                f"📦 <b>Sản phẩm:</b> {title}\n"
+            )
+            if sku_display:
+                msg_text += f"🏷️ <b>Phân loại:</b> <code>{sku_display}</code>\n"
+            if price:
+                msg_text += f"💰 <b>Giá:</b> <code>{price}</code>\n"
+            msg_text += "\n👉 Gõ <code>/cart</code> để xem giỏ hàng và giá sau voucher."
+            await query.edit_message_text(msg_text, parse_mode="HTML")
+        else:
+            err_msg = res.get("message", "Lỗi thao tác.")
+            await query.edit_message_text(f"❌ {err_msg}")
+
+        context.user_data.pop("add_cart_session", None)
+        return
+
+    # Chọn theo từng lớp phân loại
     if action.startswith("step:"):
-        # addcart:step:<layer_idx>:<opt_idx>
         parts = action.split(":")
         layer_idx = int(parts[1])
         opt_idx = int(parts[2])
@@ -371,7 +496,10 @@ async def handle_add_cart_callback(update: Update, context: ContextTypes.DEFAULT
         # Nếu còn lớp phân loại tiếp theo -> render bước kế tiếp
         if session["current_step"] < len(layers):
             text, markup = _render_product_selection(session)
-            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+            try:
+                await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                pass
             return
 
     # Khi đã chọn đủ tất cả các lớp phân loại (hoặc action == 'default')
