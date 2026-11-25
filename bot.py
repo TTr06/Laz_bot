@@ -46,6 +46,7 @@ from cookie_manager import (
 from price_tracker import (
     scrape_cart,
     track_prices,
+    sync_cart_snapshot,
     get_price_summary,
     load_price_history,
     format_cart_message,
@@ -746,9 +747,9 @@ async def cart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     products = result["products"]
     summary = result.get("summary", {})
     try:
-        products = database.save_cart_to_db(products, summary)
+        products, _ = sync_cart_snapshot(products, summary, collect_changes=False)
     except Exception as e:
-        logger.error(f"Lỗi lưu SQLite: {e}")
+        logger.error(f"Lỗi lưu SQLite/lịch sử: {e}")
     dashboard.update_cart(products, summary)
 
     dur = result.get("duration", 0.0)
@@ -764,9 +765,9 @@ async def cart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     messages = format_cart_messages(products, summary)
 
     if messages:
-        await status_msg.edit_text(messages[0], parse_mode="HTML")
+        await status_msg.edit_text(messages[0], parse_mode="HTML", disable_web_page_preview=True)
         for extra in messages[1:]:
-            await msg.reply_html(extra)
+            await msg.reply_html(extra, disable_web_page_preview=True)
 
 
 def _split_html_chunks(text: str, limit: int = 3800) -> list[str]:
@@ -813,7 +814,6 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     dashboard.set_cookie_status(True)
     total = result["total_products"]
     changes = result["changes"]
-    total_change = result.get("total_change")
     summary = result.get("summary", {})
     if result.get("products"):
         dashboard.update_cart(result["products"], summary)
@@ -824,16 +824,16 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     else:
         summary_header += "\n"
 
-    if changes or total_change:
-        changes_msg = format_changes_alert(changes, total_change)
+    if changes:
+        changes_msg = format_changes_alert(changes)
     else:
         changes_msg = "✅ Tất cả sản phẩm & phân loại vẫn giữ nguyên giá (không đổi)."
 
     full_text = summary_header + changes_msg
     chunks = _split_html_chunks(full_text)
-    await status_msg.edit_text(chunks[0], parse_mode="HTML")
+    await status_msg.edit_text(chunks[0], parse_mode="HTML", disable_web_page_preview=True)
     for extra in chunks[1:]:
-        await msg.reply_html(extra)
+        await msg.reply_html(extra, disable_web_page_preview=True)
 
 
 async def setprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

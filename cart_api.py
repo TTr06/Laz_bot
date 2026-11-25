@@ -93,6 +93,19 @@ def parse_price(price_text: Any) -> Optional[float]:
         return None
 
 
+def clean_product_url(url: str) -> str:
+    """Chuẩn hóa và rút gọn URL sản phẩm Lazada (loại bỏ tham số tracking thừa)."""
+    if not url:
+        return ""
+    cleaned = str(url).strip()
+    if cleaned.startswith("//"):
+        cleaned = "https:" + cleaned
+    cleaned = re.sub(r'^(https?://[^/]+)/+', r'\1/', cleaned)
+    if "/products/" in cleaned:
+        cleaned = cleaned.split("?", 1)[0]
+    return cleaned
+
+
 def load_cookie_dict() -> Dict[str, str]:
     """Đọc cookies từ file lazada_cookies.json và chuyển về dạng key-value dict"""
     if not os.path.exists(COOKIES_FILE):
@@ -213,11 +226,7 @@ def extract_cart_from_modules(
 
             sku_info = fields.get("sku", {}) or fields.get("skuInfo", {})
             sku_text = re.sub(r'\s+', ' ', (sku_info.get("skuText") or "").strip())
-            url = fields.get("url") or fields.get("itemUrl") or ""
-            if url:
-                if url.startswith("//"):
-                    url = "https:" + url
-                url = re.sub(r'lazada\.vn/+', 'lazada.vn/', url)
+            url = clean_product_url(fields.get("url") or fields.get("itemUrl") or "")
 
             price_info = fields.get("price", {}) or {}
             base_price = parse_price(price_info.get("price") or price_info.get("currentPrice"))

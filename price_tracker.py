@@ -9,6 +9,7 @@ Theo dõi giá tất cả sản phẩm & tất cả phân loại (SKU) trong gi�
 - Báo động khi Cookie hết hạn.
 """
 
+import html
 import json
 import os
 import re
@@ -35,6 +36,7 @@ from cart_api import (
     scrape_cart_via_requests,
     parse_price,
     extract_cart_from_modules,
+    clean_product_url,
 )
 import database
 
@@ -199,13 +201,14 @@ def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False, max_re
         # 1. Truy cập trang giỏ hàng (áp dụng safe_get chống timeout)
         safe_get(driver, CART_URL, timeout=30)
 
-        # Chờ thông minh: đợi React render xong checkbox 'Chọn tất cả' hoặc trạng thái giỏ trống/đăng nhập (tối đa 6s)
+        # Chờ thông minh: đợi trang tải hoàn chỉnh & React render xong checkbox 'Chọn tất cả' hoặc trạng thái giỏ trống/đăng nhập (tối đa 6s)
         for _ in range(60):
             cur_u = (driver.current_url or "").lower()
-            if "member.lazada.vn" in cur_u or "login" in cur_u:
+            if "member.lazada.vn" in cur_u or "login" in cur_u or "_____tmd_____" in cur_u or "punish" in cur_u:
                 break
             ready = driver.execute_script("""
                 return Boolean(
+                    document.readyState === 'complete' &&
                     document.querySelector('.list-header-checkbox input, .checkbox-wrap input[type="checkbox"], .cart-empty')
                 );
             """)
@@ -214,6 +217,19 @@ def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False, max_re
             time.sleep(0.1)
 
         cur_url = driver.current_url.lower()
+        if "_____tmd_____" in cur_url or "punish" in cur_url or "captcha" in cur_url:
+            data_bytes = _extract_data_bytes(driver)
+            duration = round(time.perf_counter() - t_start, 2)
+            if keep_alive:
+                close_shared_driver()
+            return {
+                "status": "captcha",
+                "message": "Lazada đang hiển thị xác minh chống bot (Captcha / RGV587). Vui lòng xác minh thủ công trên trình duyệt, giữ nguyên dữ liệu cũ.",
+                "products": [],
+                "summary": {},
+                "duration": duration,
+                "data_bytes": data_bytes,
+            }
         if "member.lazada.vn" in cur_url or "login" in cur_url:
             data_bytes = _extract_data_bytes(driver)
             duration = round(time.perf_counter() - t_start, 2)
@@ -258,7 +274,35 @@ def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False, max_re
             }
 
         # 2. Đảm bảo tick 'Chọn tất cả' để Lazada tính lại toàn bộ giá khuyến mãi / voucher & tải đủ 100% các mặt hàng
-        async_module, summary_raw_text = _ensure_select_all_and_capture(driver)
+        async_module, summary_raw_text, block_reason = _ensure_select_all_and_capture(driver)
+
+        if block_reason == "captcha":
+            data_bytes = _extract_data_bytes(driver)
+            duration = round(time.perf_counter() - t_start, 2)
+            if keep_alive:
+                close_shared_driver()
+            return {
+                "status": "captcha",
+                "message": "Lazada yêu cầu xác minh Captcha / chống bot (RGV587) khi thao tác Chọn tất cả. Giữ nguyên dữ liệu giá cũ trong database.",
+                "products": [],
+                "summary": {},
+                "duration": duration,
+                "data_bytes": data_bytes,
+            }
+
+        if block_reason == "select_all_failed":
+            data_bytes = _extract_data_bytes(driver)
+            duration = round(time.perf_counter() - t_start, 2)
+            if keep_alive:
+                close_shared_driver()
+            return {
+                "status": "error",
+                "message": "Không thể tick 'Chọn tất cả' để tính giá cuối cùng trên Lazada. Giữ nguyên dữ liệu giá cũ trong database.",
+                "products": [],
+                "summary": {},
+                "duration": duration,
+                "data_bytes": data_bytes,
+            }
 
         # 3. Đọc dữ liệu từng sản phẩm & từng phân loại và Giá Cuối Cùng ngay tại giỏ
         products, summary_data = _extract_cart_and_summary(
@@ -390,28 +434,53 @@ def _is_summary_populated(summary_txt: str) -> bool:
     return True
 
 
-def _ensure_select_all_and_capture(driver) -> tuple[Optional[Dict[str, Any]], str]:
+def _has_captcha_in_async_queue(driver) -> bool:
+    """Kiểm tra xem /cart/api/async có bị chặn bởi Captcha / RGV587 không."""
+    try:
+        return bool(driver.execute_script("""
+            var q = window.__lazAsyncQueue || [];
+            for (var i = 0; i < q.length; i++) {
+                var b = q[i].body || '';
+                if (
+                    b.indexOf('RGV587_ERROR') !== -1 ||
+                    b.indexOf('FAIL_SYS_USER_VALIDATE') !== -1 ||
+                    b.indexOf('_____tmd_____') !== -1 ||
+                    b.indexOf('action=captcha') !== -1
+                ) {
+                    return true;
+                }
+            }
+            return Boolean(document.querySelector('#baxia-punish, .nc-container, iframe[src*="punish"]'));
+        """))
+    except Exception:
+        return False
+
+
+def _ensure_select_all_and_capture(driver) -> tuple[Optional[Dict[str, Any]], str, Optional[str]]:
     """
     Đảm bảo tất cả mặt hàng hợp lệ trong giỏ hàng đều được tick chọn:
     - Nếu 'Chọn tất cả' đang bật sẵn từ phiên trước, bỏ chọn rồi chọn lại để Lazada
       chạy /cart/api/async tính mới 100% giá thực tế và nạp đầy đủ mọi trang sản phẩm.
-    - Trả về (async_module, summary_raw_text).
+    - Phát hiện ngay Captcha / RGV587 hoặc lỗi không tick được để tránh ghi đè dữ liệu sai.
+    - Trả về (async_module, summary_raw_text, block_reason).
     """
     try:
         driver.execute_script(_CART_ASYNC_HOOK_JS)
         state = _get_header_checkbox_state(driver)
         if state.get("isEmpty") or not state.get("found"):
-            return None, state.get("summaryText", "")
+            return None, state.get("summaryText", ""), None
 
         if state.get("disabled"):
             # Toàn bộ sản phẩm đều hết hàng / vô hiệu -> đọc trực tiếp trạng thái hiện tại
-            return None, state.get("summaryText", "")
+            return None, state.get("summaryText", ""), None
 
         # Nếu đang được chọn sẵn (do phiên trước giữ trạng thái), bỏ chọn trước để làm mới hoàn toàn
         if state.get("checked"):
             driver.execute_script("window.__lazAsyncQueue = [];")
             _click_header_select_all(driver)
             for _ in range(25):
+                if _has_captcha_in_async_queue(driver):
+                    return None, "", "captcha"
                 cur = _get_header_checkbox_state(driver)
                 q_len = driver.execute_script("return (window.__lazAsyncQueue || []).length;")
                 if not cur.get("checked") and q_len > 0:
@@ -429,6 +498,9 @@ def _ensure_select_all_and_capture(driver) -> tuple[Optional[Dict[str, Any]], st
             _click_header_select_all(driver)
 
             for _ in range(45):
+                if _has_captcha_in_async_queue(driver):
+                    return None, "", "captcha"
+
                 async_module = _pop_selected_async_module(driver)
                 if async_module is not None:
                     # Cho React 150ms render lại DOM đồng bộ với response vừa nhận
@@ -448,7 +520,6 @@ def _ensure_select_all_and_capture(driver) -> tuple[Optional[Dict[str, Any]], st
 
                 cur_now = _get_header_checkbox_state(driver)
                 if cur_now.get("checked") and _is_summary_populated(cur_now.get("summaryText", "")):
-                    # Trường hợp hook không bắt được payload nhưng UI đã chọn & cập nhật xong
                     q_len = driver.execute_script("return (window.__lazAsyncQueue || []).length;")
                     if q_len > 0:
                         time.sleep(0.15)
@@ -459,11 +530,18 @@ def _ensure_select_all_and_capture(driver) -> tuple[Optional[Dict[str, Any]], st
             if async_module is not None:
                 break
 
+        if _has_captcha_in_async_queue(driver):
+            return None, "", "captcha"
+
         final_state = _get_header_checkbox_state(driver)
-        return async_module, final_state.get("summaryText", "")
+        summary_txt = final_state.get("summaryText", "")
+        if async_module is None and not (final_state.get("checked") and _is_summary_populated(summary_txt)):
+            return None, summary_txt, "select_all_failed"
+
+        return async_module, summary_txt, None
     except Exception as e:
         print(f"[!] Lỗi khi tick Chọn tất cả: {e}")
-        return None, ""
+        return None, "", "select_all_failed"
 
 
 def _parse_summary_text(summary_raw_text: str) -> Dict[str, Any]:
@@ -534,11 +612,7 @@ def _extract_dom_cart_items(driver) -> List[Dict[str, Any]]:
         if not title:
             continue
         sku_text = re.sub(r'\s+', ' ', (item.get("sku") or "").strip())
-        url = (item.get("href") or "").strip()
-        if url:
-            if url.startswith("//"):
-                url = "https:" + url
-            url = re.sub(r'lazada\.vn/+', 'lazada.vn/', url)
+        url = clean_product_url(item.get("href") or "")
 
         base_price = parse_price(item.get("current_price"))
         discount_price = parse_price(item.get("discount_price")) if item.get("discount_price") else None
@@ -636,26 +710,28 @@ def scrape_cart(headless: bool = True, keep_alive: bool = False, prefer_api: boo
     return scrape_cart_selenium(headless=headless, keep_alive=keep_alive)
 
 
-def track_prices(headless: bool = True, keep_driver: bool = False, prefer_api: bool = False) -> dict:
+def sync_cart_snapshot(
+    products: List[Dict[str, Any]],
+    summary: Dict[str, Any],
+    collect_changes: bool = False,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Theo dõi biến động giá thực tế của TẤT CẢ sản phẩm và TẤT CẢ phân loại (SKU).
+    Cập nhật giá mới nhất của TẤT CẢ sản phẩm vào cả price_history.json và SQLite database
+    (bất kể giá mới cao hơn hay thấp hơn giá đáy).
+    Nếu collect_changes=True, trả về danh sách biến động từng mặt hàng đủ điều kiện báo động.
     """
-    scrape_res = scrape_cart(headless=headless, keep_alive=keep_driver, prefer_api=prefer_api)
-    if scrape_res["status"] != "ok":
-        return scrape_res
-
-    products = scrape_res["products"]
-    summary = scrape_res["summary"]
     history = load_price_history()
     now = datetime.now().isoformat()
-    changes = []
+    changes: List[Dict[str, Any]] = []
 
-    # So sánh từng sản phẩm và từng phân loại
     for p in products:
         name = p["name"]
         sku = p.get("sku", "")
         curr_price = p["price"]
         curr_valid = p.get("valid", True)
+        clean_url = clean_product_url(p.get("url", ""))
+        if clean_url:
+            p["url"] = clean_url
         # Khóa định danh duy nhất cho từng phân loại của từng sản phẩm
         pid = _hash_id(f"{name} || {sku}")
 
@@ -664,47 +740,54 @@ def track_prices(headless: bool = True, keep_driver: bool = False, prefer_api: b
             old_price = prod_entry.get("current_price")
             old_valid = prod_entry.get("valid", True)
 
-            # 1. Phát hiện thay đổi giá (kiểm tra điều kiện giá mục tiêu nếu có)
-            if old_price is None and curr_price:
+            # 1. Luôn cập nhật giá mới vào bộ nhớ lịch sử dù cao hơn hay thấp hơn giá đáy
+            if old_price is None and curr_price is not None:
                 prod_entry["current_price"] = curr_price
                 if not prod_entry.get("price_history"):
                     prod_entry["price_history"] = [{"price": curr_price, "timestamp": now}]
-            elif old_price and curr_price and old_price != curr_price:
-                diff = curr_price - old_price
-                pct = (diff / old_price) * 100
-                should_notify, target_price = should_notify_price_change(pid, old_price, curr_price)
-                if should_notify:
-                    changes.append({
-                        "type": "PRICE_CHANGE",
-                        "name": name,
-                        "sku": sku,
-                        "old_price": old_price,
-                        "new_price": curr_price,
-                        "diff": diff,
-                        "diff_pct": round(pct, 2),
-                        "direction": "GIẢM" if diff < 0 else "TĂNG",
-                        "url": p.get("url", ""),
-                        "target_price": target_price,
-                        "reached_target": bool(target_price and curr_price <= target_price)
-                    })
-                # Luôn ghi nhận lịch sử và cập nhật giá hiện tại vào bộ nhớ/database dù giá có cao hơn mức giá đáy
-                prod_entry["price_history"].append({"price": curr_price, "timestamp": now})
+            elif old_price is not None and curr_price is not None and old_price != curr_price:
+                if collect_changes:
+                    diff = curr_price - old_price
+                    pct = (diff / old_price) * 100 if old_price > 0 else 0.0
+                    should_notify, target_price = should_notify_price_change(pid, old_price, curr_price)
+                    if should_notify:
+                        changes.append({
+                            "type": "PRICE_CHANGE",
+                            "name": name,
+                            "sku": sku,
+                            "old_price": old_price,
+                            "new_price": curr_price,
+                            "diff": diff,
+                            "diff_pct": round(pct, 2),
+                            "direction": "GIẢM" if diff < 0 else "TĂNG",
+                            "url": clean_url,
+                            "target_price": target_price,
+                            "reached_target": bool(target_price and curr_price <= target_price),
+                        })
+                prod_entry.setdefault("price_history", []).append({"price": curr_price, "timestamp": now})
+                prod_entry["current_price"] = curr_price
+            elif curr_price is not None:
                 prod_entry["current_price"] = curr_price
 
             # 2. Phát hiện thay đổi trạng thái tồn kho (Hết hàng / Có hàng lại)
             if old_valid != curr_valid:
-                changes.append({
-                    "type": "STOCK_CHANGE",
-                    "name": name,
-                    "sku": sku,
-                    "status": "CÓ HÀNG LẠI" if curr_valid else "HẾT HÀNG",
-                    "price": curr_price,
-                    "url": p.get("url", "")
-                })
+                if collect_changes:
+                    changes.append({
+                        "type": "STOCK_CHANGE",
+                        "name": name,
+                        "sku": sku,
+                        "status": "CÓ HÀNG LẠI" if curr_valid else "HẾT HÀNG",
+                        "price": curr_price,
+                        "url": clean_url,
+                    })
                 prod_entry["valid"] = curr_valid
 
             prod_entry["last_check"] = now
             prod_entry["sku"] = sku
+            if p.get("base_price") is not None:
+                prod_entry["base_price"] = p.get("base_price")
+            if clean_url:
+                prod_entry["url"] = clean_url
         else:
             # Sản phẩm / phân loại mới được thêm vào giỏ
             history["products"][pid] = {
@@ -713,39 +796,37 @@ def track_prices(headless: bool = True, keep_driver: bool = False, prefer_api: b
                 "valid": curr_valid,
                 "current_price": curr_price,
                 "base_price": p.get("base_price"),
-                "url": p.get("url", ""),
+                "url": clean_url,
                 "first_seen": now,
                 "last_check": now,
-                "price_history": [{"price": curr_price, "timestamp": now}]
+                "price_history": [{"price": curr_price, "timestamp": now}] if curr_price is not None else [],
             }
-
-    # 3. Phát hiện thay đổi Tổng thanh toán toàn giỏ hàng
-    old_summary = history.get("order_summary") or {}
-    total_change = None
-    if old_summary and summary:
-        old_total_str = old_summary.get("Total")
-        new_total_str = summary.get("Total")
-        if old_total_str and new_total_str and old_total_str != new_total_str:
-            old_num = parse_price(old_total_str)
-            new_num = parse_price(new_total_str)
-            if old_num and new_num:
-                diff_total = new_num - old_num
-                total_change = {
-                    "old_total": old_total_str,
-                    "new_total": new_total_str,
-                    "diff": diff_total,
-                    "direction": "GIẢM" if diff_total < 0 else "TĂNG"
-                }
 
     history["last_check"] = now
     history["order_summary"] = summary
     save_price_history(history)
 
-    # Lưu đồng bộ vào SQLite và gán STT chuẩn xác 100%
+    # Luôn lưu đồng bộ toàn bộ sản phẩm & giá mới vào SQLite database và gán STT chuẩn xác
     try:
         products = database.save_cart_to_db(products, summary)
     except Exception as e:
         print(f"[!] Lỗi lưu giỏ hàng SQLite: {e}")
+
+    return products, changes
+
+
+def track_prices(headless: bool = True, keep_driver: bool = False, prefer_api: bool = False) -> dict:
+    """
+    Theo dõi biến động giá thực tế của TẤT CẢ sản phẩm và TẤT CẢ phân loại (SKU).
+    Không phát cảnh báo biến động tổng giá trị giỏ hàng.
+    """
+    scrape_res = scrape_cart(headless=headless, keep_alive=keep_driver, prefer_api=prefer_api)
+    if scrape_res["status"] != "ok":
+        return scrape_res
+
+    products = scrape_res["products"]
+    summary = scrape_res["summary"]
+    products, changes = sync_cart_snapshot(products, summary, collect_changes=True)
 
     return {
         "status": "ok",
@@ -753,16 +834,16 @@ def track_prices(headless: bool = True, keep_driver: bool = False, prefer_api: b
         "products": products,
         "summary": summary,
         "changes": changes,
-        "total_change": total_change,
-        "timestamp": now,
+        "total_change": None,
+        "timestamp": datetime.now().isoformat(),
         "duration": scrape_res.get("duration", 0.0),
-        "data_bytes": scrape_res.get("data_bytes", 0)
+        "data_bytes": scrape_res.get("data_bytes", 0),
     }
 
 
 def format_cart_messages(products: List[dict], summary: dict) -> List[str]:
     """
-    Định dạng danh sách sản phẩm và tổng tiền giỏ hàng gọn gàng, súc tích.
+    Định dạng danh sách sản phẩm (kèm link sản phẩm) và tổng tiền giỏ hàng gọn gàng.
     Tự động chia nhỏ tin nhắn nếu vượt giới hạn 4096 ký tự của Telegram.
     """
     messages = []
@@ -776,14 +857,14 @@ def format_cart_messages(products: List[dict], summary: dict) -> List[str]:
     current_lines.append(f"🛒 <b>GIỎ HÀNG LAZADA ({total_count} mặt hàng)</b>")
 
     if summary and "Total" in summary:
-        current_lines.append(f"💵 <b>Giá cuối:</b> <code>{summary['Total']}</code>")
+        current_lines.append(f"💵 <b>Giá cuối:</b> <code>{html.escape(str(summary['Total']))}</code>")
         sub = summary.get("Subtotal")
         promo = summary.get("Promotion")
         ship = summary.get("Shipping Fee")
         details = []
-        if sub: details.append(f"Tạm tính: {sub}")
-        if promo: details.append(f"Giảm: {promo}")
-        if ship: details.append(f"Ship: {ship}")
+        if sub: details.append(f"Tạm tính: {html.escape(str(sub))}")
+        if promo: details.append(f"Giảm: {html.escape(str(promo))}")
+        if ship: details.append(f"Ship: {html.escape(str(ship))}")
         if details:
             current_lines.append(f"<i>({', '.join(details)})</i>")
         current_lines.append("────────────────────\n")
@@ -794,16 +875,20 @@ def format_cart_messages(products: List[dict], summary: dict) -> List[str]:
     for i, p in enumerate(valid_items, 1):
         stt = p.get("stt", i)
         name = p.get("name", "").strip()
-        name_display = name[:70] + ("..." if len(name) > 70 else "")
-        sku_val = p.get("sku", "").strip()
-        sku = f"\n   🏷️ <i>Phân loại: {sku_val}</i>" if sku_val else ""
+        name_short = name[:70] + ("..." if len(name) > 70 else "")
+        name_display = html.escape(name_short, quote=False)
+        sku_raw = p.get("sku", "").strip()
+        sku = f"\n   🏷️ <i>Phân loại: {html.escape(sku_raw, quote=False)}</i>" if sku_raw else ""
         price = p.get("price")
 
-        pid = _hash_id(f"{name} || {sku_val}")
+        clean_url = clean_product_url(p.get("url", ""))
+        link_line = f"\n   🔗 <a href=\"{html.escape(clean_url, quote=True)}\">Link sản phẩm</a>" if clean_url else ""
+
+        pid = _hash_id(f"{name} || {sku_raw}")
         target_p = get_target_price(pid)
         target_info = ""
         if target_p:
-            if price and price <= target_p:
+            if price is not None and price <= target_p:
                 target_info = f"\n   🎯 <i>Giá đáy: ≤ {target_p:,.0f}₫ (Đã đạt 🎉)</i>"
             else:
                 target_info = f"\n   🎯 <i>Giá đáy: ≤ {target_p:,.0f}₫</i>"
@@ -814,18 +899,20 @@ def format_cart_messages(products: List[dict], summary: dict) -> List[str]:
             item_block = (
                 f"<b>{stt}. {name_display}</b>{sku}{target_info}\n"
                 f"   💰 Giá: <b>{price:,.0f}₫</b> <s>{base_p:,.0f}₫</s> <i>(-{diff:,.0f}₫)</i>"
+                f"{link_line}"
             )
         else:
             price_str = f"{price:,.0f}₫" if price else "N/A"
             item_block = (
                 f"<b>{stt}. {name_display}</b>{sku}{target_info}\n"
                 f"   💰 Giá: <b>{price_str}</b>"
+                f"{link_line}"
             )
 
         block_len = len(item_block) + 2
         if current_char_count + block_len > 3500 and current_lines:
             messages.append("\n\n".join(current_lines))
-            current_lines = [f"📦 <b>Danh sách sản phẩm (tiếp theo):</b>"]
+            current_lines = ["📦 <b>Danh sách sản phẩm (tiếp theo):</b>"]
             current_char_count = len(current_lines[0])
 
         current_lines.append(item_block)
@@ -841,10 +928,12 @@ def format_cart_messages(products: List[dict], summary: dict) -> List[str]:
 
         current_lines.append(inv_header)
         for p in invalid_items:
-            name = p.get("name", "")[:60]
-            sku_val = p.get("sku", "").strip()
-            sku = f" <i>[{sku_val}]</i>" if sku_val else ""
-            inv_block = f"• <s>{name}</s>{sku}"
+            name_safe = html.escape(p.get("name", "")[:60], quote=False)
+            sku_raw = p.get("sku", "").strip()
+            sku = f" <i>[{html.escape(sku_raw, quote=False)}]</i>" if sku_raw else ""
+            clean_url = clean_product_url(p.get("url", ""))
+            inv_link = f" — <a href=\"{html.escape(clean_url, quote=True)}\">Link</a>" if clean_url else ""
+            inv_block = f"• <s>{name_safe}</s>{sku}{inv_link}"
             if current_char_count + len(inv_block) > 3500:
                 messages.append("\n\n".join(current_lines))
                 current_lines = []
@@ -872,29 +961,19 @@ def format_cart_message(products: List[dict], summary: dict) -> str:
 
 
 def format_changes_alert(changes: list, total_change: Optional[dict] = None) -> str:
-    """Format tin nhắn cảnh báo gửi tự động khi có biến động giá"""
-    if not changes and not total_change:
+    """Format tin nhắn cảnh báo gửi tự động khi có biến động giá từng sản phẩm (không báo tổng giỏ)"""
+    if not changes:
         return ""
 
-    lines = ["🔔 <b>BIẾN ĐỘNG GIÁ GIỎ HÀNG</b>\n"]
-
-    if total_change:
-        direction = total_change["direction"]
-        icon = "📉" if direction == "GIẢM" else "📈"
-        diff_str = f"{abs(total_change['diff']):,.0f}₫"
-        lines.append(
-            f"{icon} <b>Tổng giỏ hàng:</b> {total_change['old_total']} ➔ <b>{total_change['new_total']}</b> ({direction} {diff_str})\n"
-        )
+    lines = ["🔔 <b>BIẾN ĐỘNG GIÁ SẢN PHẨM</b>\n"]
 
     for c in changes:
         c_type = c.get("type", "PRICE_CHANGE")
-        name = c["name"][:70]
+        name = html.escape(c["name"][:70], quote=False)
         sku_val = c.get("sku", "").strip()
-        sku_str = f"   🏷️ <i>Phân loại: <b>{sku_val}</b></i>\n" if sku_val else ""
-        raw_url = c.get("url", "").strip()
-        if raw_url and raw_url.startswith("//"):
-            raw_url = "https:" + raw_url
-        link_str = f"   🛒 <a href=\"{raw_url}\">Mua ngay trên Lazada</a>\n" if raw_url else ""
+        sku_str = f"   🏷️ <i>Phân loại: <b>{html.escape(sku_val, quote=False)}</b></i>\n" if sku_val else ""
+        clean_url = clean_product_url(c.get("url", ""))
+        link_str = f"   🛒 <a href=\"{html.escape(clean_url, quote=True)}\">Mua ngay trên Lazada</a>\n" if clean_url else ""
 
         if c_type == "PRICE_CHANGE":
             icon = "📉" if c["direction"] == "GIẢM" else "📈"
@@ -920,7 +999,7 @@ def format_changes_alert(changes: list, total_change: Optional[dict] = None) -> 
             lines.append(
                 f"{icon} <b>{name}</b>\n"
                 f"{sku_str}"
-                f"   📦 Tồn kho: <b>{status}</b>\n"
+                f"   📦 Tồn kho: <b>{html.escape(status, quote=False)}</b>\n"
                 f"{price_info}"
                 f"{link_str}"
             )

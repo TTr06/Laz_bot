@@ -414,12 +414,16 @@ DANH SÁCH CÁC LỆNH HỖ TRỢ TRÊN HOST CLI:
 ----------------------------------------------------------------------
 """)
 
-    def cmd_prices(self, argv: List[str], argc: int):
+    def cmd_prices(self, argv: List[str], argc: int, show_links: bool = False):
+        if any(a.lower() in ("link", "links", "--link", "--links", "-l") for a in argv[1:]):
+            show_links = True
+
         items = database.get_cart_items_db()
         if not items:
             print("[!] Chưa có dữ liệu giỏ hàng. Hãy chạy lệnh 'cart' để quét trước.")
             return
 
+        from cart_api import clean_product_url
         summary = database.get_cart_summary_db()
         total_val = summary.get("Total", "0₫") if summary else "0₫"
         updated_at = summary.get("updated_at", "N/A") if summary else "N/A"
@@ -442,6 +446,10 @@ DANH SÁCH CÁC LỆNH HỖ TRỢ TRÊN HOST CLI:
 
             valid_str = "" if p.get("valid", True) else " [Hết hàng]"
             print(f"{stt:<4} | {name:<32} | {sku:<24} | {price_str:<12} | {target_str:<10}{valid_str}")
+            if show_links:
+                url = clean_product_url(p.get("url") or "")
+                if url:
+                    print(f"     🔗 {url}")
 
         print("-" * 90)
         print(f"Tổng: {len(items)} mặt hàng.\n")
@@ -543,16 +551,16 @@ DANH SÁCH CÁC LỆNH HỖ TRỢ TRÊN HOST CLI:
             print(f"[i] Sản phẩm #{stt} chưa được cài đặt giá đáy.")
 
     def cmd_cart(self, argv: List[str], argc: int):
-        from price_tracker import scrape_cart
+        from price_tracker import scrape_cart, sync_cart_snapshot
         print("[*] Đang mở trình duyệt headless để quét giỏ hàng Lazada và tính Giá Cuối Cùng...")
         res = scrape_cart(headless=True)
         if res.get("status") == "ok":
             products = res.get("products", [])
             summary = res.get("summary", {})
-            database.save_cart_to_db(products, summary)
+            products, _ = sync_cart_snapshot(products, summary, collect_changes=False)
             print(f"[OK] Đã quét thành công {len(products)} phân loại sản phẩm!")
             print(f"     Tổng tiền giỏ: {summary.get('Total', '0₫')}")
-            self.cmd_prices([], 0)
+            self.cmd_prices([], 0, show_links=True)
         else:
             print(f"[!] Lỗi quét giỏ: {res.get('message')}")
 
@@ -562,17 +570,11 @@ DANH SÁCH CÁC LỆNH HỖ TRỢ TRÊN HOST CLI:
         res = track_prices(headless=True)
         if res.get("status") == "ok":
             changes = res.get("changes", [])
-            total_change = res.get("total_change")
             total_p = res.get("total_products", 0)
             summary = res.get("summary", {})
             print(f"[OK] Đã kiểm tra {total_p} sản phẩm. Tổng tiền: {summary.get('Total', '0₫')}")
-            if changes or total_change:
+            if changes:
                 print(f"\n[!] PHÁT HIỆN {len(changes)} BIẾN ĐỘNG:")
-                if total_change:
-                    print(
-                        f"• Tổng giỏ hàng: {total_change['old_total']} -> {total_change['new_total']} "
-                        f"({total_change['direction']} {abs(total_change['diff']):,.0f}₫)"
-                    )
                 for c in changes:
                     c_type = c.get("type", "PRICE_CHANGE")
                     sku_val = (c.get("sku") or "").strip()

@@ -147,7 +147,6 @@ async def run_single_check(bot, next_target: Optional[datetime] = None, interval
             dashboard.update_cart(products, summary)
 
         changes = result.get("changes", [])
-        total_change = result.get("total_change")
 
         # In đúng 1 dòng log duy nhất bao gồm trạng thái giỏ, thời gian quét và dung lượng mạng
         log_check_result(
@@ -162,9 +161,9 @@ async def run_single_check(bot, next_target: Optional[datetime] = None, interval
             data_bytes=data_bytes
         )
 
-        # Xử lý trường hợp có biến động giá sản phẩm hoặc phân loại
-        if changes or total_change:
-            alert_msg = format_changes_alert(changes, total_change)
+        # Chỉ cảnh báo khi có biến động giá / tồn kho ở từng sản phẩm (không báo biến động tổng giỏ hàng)
+        if changes:
+            alert_msg = format_changes_alert(changes)
             if alert_msg:
                 await broadcast_message(bot, alert_msg)
     else:

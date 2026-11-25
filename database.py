@@ -257,9 +257,17 @@ def save_cart_to_db(products: List[Dict[str, Any]], summary: Dict[str, Any]) -> 
         conn.execute("DELETE FROM cart_items")
 
         updated_products = []
-        for idx, p in enumerate(ordered_items, 1):
+        seen_pids = set()
+        idx = 0
+        for p in ordered_items:
             name = (p.get("name") or "").strip()
             sku = (p.get("sku") or "").strip()
+            pid = _hash_id(f"{name} || {sku}")
+            if pid in seen_pids:
+                continue
+            seen_pids.add(pid)
+            idx += 1
+
             price = float(p.get("price") or 0)
             base_price = float(p.get("base_price") or price)
             has_disc = 1 if (p.get("has_discount") or base_price > price) else 0
@@ -269,16 +277,13 @@ def save_cart_to_db(products: List[Dict[str, Any]], summary: Dict[str, Any]) -> 
             image = p.get("image", "")
             shop_name = p.get("shop_name", "")
 
-            # Mã hash chuẩn
-            pid = _hash_id(f"{name} || {sku}")
-
             conn.execute("""
-                INSERT INTO cart_items 
+                INSERT OR REPLACE INTO cart_items 
                 (stt, pid, name, sku, price, base_price, has_discount, discount_amount, valid, url, image, shop_name, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (idx, pid, name, sku, price, base_price, has_disc, disc_amt, is_valid, url, image, shop_name, now_iso))
 
-            # Ghi nhận lịch sử giá nếu chưa có hoặc có giá mới
+            # Luôn ghi nhận lịch sử giá và giá mới nhất dù cao hơn hay thấp hơn giá đáy
             cur = conn.execute("SELECT price FROM price_history WHERE pid = ? ORDER BY id DESC LIMIT 1", (pid,))
             last_rec = cur.fetchone()
             if not last_rec or last_rec["price"] != price:
@@ -298,7 +303,7 @@ def save_cart_to_db(products: List[Dict[str, Any]], summary: Dict[str, Any]) -> 
             summary.get("Subtotal", ""),
             summary.get("Promotion", ""),
             summary.get("Shipping Fee", ""),
-            len(ordered_items),
+            len(updated_products),
             now_iso
         ))
 
