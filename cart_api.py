@@ -68,11 +68,25 @@ PAGE_HEADERS = {
 
 
 def parse_price(price_text: Any) -> Optional[float]:
-    """Chuyển đổi chuỗi giá tiền thành số thực"""
-    if price_text is None:
+    """Chuyển đổi giá trị hoặc chuỗi giá tiền thành số thực (hỗ trợ cả float/int, VNĐ dấu chấm và dấu phẩy)."""
+    if price_text is None or isinstance(price_text, bool):
         return None
+    if isinstance(price_text, (int, float)):
+        return float(price_text)
+
     cleaned = re.sub(r'[^\d.,]', '', str(price_text))
-    cleaned = cleaned.replace('.', '').replace(',', '.')
+    if not cleaned:
+        return None
+
+    # Dạng tiền Việt (VD: 1.236.000 hoặc 330.144) -> bỏ dấu chấm phần nghìn
+    if cleaned.count('.') > 1 or re.search(r'\.\d{3}(?:$|[^\d])', cleaned):
+        cleaned = cleaned.replace('.', '')
+    # Dạng phân cách phần nghìn bằng dấu phẩy (VD: 1,236,000 hoặc 835,200)
+    if cleaned.count(',') > 1 or ('.' not in cleaned and re.search(r',\d{3}$', cleaned)):
+        cleaned = cleaned.replace(',', '')
+    else:
+        cleaned = cleaned.replace(',', '.')
+
     try:
         return float(cleaned)
     except ValueError:
@@ -128,16 +142,58 @@ def calculate_mtop_sign(token: str, t: str, app_key: str, data: str) -> str:
     return hashlib.md5(sign_str.encode("utf-8")).hexdigest()
 
 
-def extract_cart_from_modules(mod_data: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """
-    Trích xuất danh sách tất cả sản phẩm & phân loại (SKU) và tổng đơn hàng từ module data
-    Tương thích 100% với cấu trúc dữ liệu của Lazada cart (cả mtop và window.__initData__).
-    """
-    products = []
-    summary_data = {}
-    calculated_total = 0.0
+def _collect_ordered_module_keys(mod_data: Dict[str, Any], hierarchy: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Thu thập thứ tự key node trong giỏ hàng theo cấu trúc hierarchy.structure nếu có."""
+    ordered: List[str] = []
+    seen = set()
 
-    for key, val in mod_data.items():
+    struct = hierarchy.get("structure", {}) if isinstance(hierarchy, dict) else {}
+    if isinstance(struct, dict) and struct:
+        def _walk(node_key: str) -> None:
+            for child in struct.get(node_key, []) or []:
+                if child in seen:
+                    continue
+                seen.add(child)
+                ordered.append(child)
+                if child in struct:
+                    _walk(child)
+
+        root_key = "leftContainer_CL" if "leftContainer_CL" in struct else hierarchy.get("root", "root_0")
+        if isinstance(root_key, str) and root_key in struct:
+            _walk(root_key)
+        # Bổ sung rightContainer / orderSummary nếu nằm ngoài leftContainer
+        if "rightContainer_CR" in struct:
+            _walk("rightContainer_CR")
+
+    # Đảm bảo không bỏ sót bất kỳ key nào ngoài cây hierarchy
+    for key in mod_data.keys():
+        if key not in seen:
+            seen.add(key)
+            ordered.append(key)
+
+    return ordered
+
+
+def _is_zero_currency_text(text: str) -> bool:
+    val = parse_price(text)
+    return val is None or val <= 0
+
+
+def extract_cart_from_modules(
+    mod_data: Dict[str, Any],
+    hierarchy: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Trích xuất danh sách tất cả sản phẩm & phân loại (SKU) và tổng đơn hàng từ module data.
+    Tương thích cả tiếng Việt và tiếng Anh, hỗ trợ duyệt theo hierarchy.structure chuẩn thứ tự giỏ hàng.
+    """
+    products: List[Dict[str, Any]] = []
+    summary_data: Dict[str, Any] = {}
+    calculated_total = 0.0
+    ordered_keys = _collect_ordered_module_keys(mod_data, hierarchy)
+
+    for key in ordered_keys:
+        val = mod_data.get(key)
         if not isinstance(val, dict):
             continue
 
@@ -146,13 +202,17 @@ def extract_cart_from_modules(mod_data: Dict[str, Any]) -> Tuple[List[Dict[str, 
         # 1. Trích xuất thông tin sản phẩm và từng phân loại SKU
         if tag == "item":
             fields = val.get("fields", {})
-            title = fields.get("title", "").strip()
+            title = (fields.get("title") or "").strip()
             if not title:
                 continue
 
             valid = bool(fields.get("valid", True))
+            selected = bool((fields.get("checkbox") or {}).get("selected", False))
+            qty_raw = (fields.get("quantity") or {}).get("quantity")
+            quantity = int(qty_raw) if isinstance(qty_raw, (int, float)) and qty_raw > 0 else 1
+
             sku_info = fields.get("sku", {}) or fields.get("skuInfo", {})
-            sku_text = sku_info.get("skuText", "")
+            sku_text = re.sub(r'\s+', ' ', (sku_info.get("skuText") or "").strip())
             url = fields.get("url") or fields.get("itemUrl") or ""
             if url:
                 if url.startswith("//"):
@@ -170,42 +230,57 @@ def extract_cart_from_modules(mod_data: Dict[str, Any]) -> Tuple[List[Dict[str, 
             real_price = discount_price if (discount_price is not None and discount_price > 0) else base_price
 
             if valid and real_price:
-                calculated_total += real_price
+                calculated_total += real_price * quantity
+
+            has_disc = bool(discount_price and base_price and discount_price < base_price)
+            disc_amt = (base_price - discount_price) if has_disc else 0
 
             products.append({
                 "name": title,
                 "sku": sku_text,
                 "valid": valid,
+                "selected": selected,
+                "quantity": quantity,
                 "base_price": base_price,
                 "discount_price": discount_price,
                 "price": real_price,
-                "has_discount": bool(discount_price and base_price and discount_price < base_price),
-                "discount_amount": (base_price - discount_price) if (discount_price and base_price) else 0,
+                "has_discount": has_disc,
+                "discount_amount": disc_amt,
                 "url": url,
-                "timestamp": datetime.now().isoformat()
+                "image": fields.get("img") or "",
+                "shop_name": fields.get("sellerName") or "",
+                "timestamp": datetime.now().isoformat(),
             })
 
         # 2. Trích xuất tổng đơn hàng (Order Total)
         elif tag == "orderTotal":
             fields = val.get("fields", {})
             payment = fields.get("payment", {})
-            pay_str = payment.get("pay")
-            if pay_str and pay_str != "₫ 0":
+            pay_str = (payment.get("pay") or "").strip()
+            if pay_str and not _is_zero_currency_text(pay_str):
                 summary_data["Total"] = pay_str
 
-        # 3. Trích xuất chi tiết giảm giá / phí ship (Order Summary)
+        # 3. Trích xuất chi tiết tạm tính / khuyến mãi / phí vận chuyển (hỗ trợ cả tiếng Việt & tiếng Anh)
         elif tag == "orderSummary":
             fields = val.get("fields", {})
-            summarys = fields.get("summarys", [])
-            for s in summarys:
-                stitle = s.get("title")
-                sval = s.get("value")
-                if stitle and sval:
+            for s in fields.get("summarys", []) or []:
+                stitle = (s.get("title") or "").strip()
+                sval = (s.get("value") or "").strip()
+                if not stitle or not sval:
+                    continue
+                low = stitle.lower()
+                if "tạm tính" in low or "subtotal" in low:
+                    summary_data["Subtotal"] = sval
+                elif "phí vận chuyển" in low or "shipping" in low:
+                    summary_data["Shipping Fee"] = sval
+                elif "khuyến mãi" in low or "promotion" in low or "giảm" in low or "voucher" in low:
+                    summary_data["Promotion"] = sval
+                else:
                     summary_data[stitle] = sval
 
-    # Nếu giao diện chưa bấm chọn sản phẩm (Total = 0), tự động tính tổng tiền từ tất cả sản phẩm hợp lệ trong giỏ
-    if ("Total" not in summary_data or summary_data["Total"] == "₫ 0") and calculated_total > 0:
-        summary_data["Total"] = f"{int(calculated_total):,}₫".replace(",", ".")
+    # Dự phòng nếu chưa có Total hợp lệ
+    if ("Total" not in summary_data or _is_zero_currency_text(summary_data["Total"])) and calculated_total > 0:
+        summary_data["Total"] = f"{int(round(calculated_total)):,}₫".replace(",", ".")
 
     return products, summary_data
 
@@ -313,16 +388,20 @@ def fetch_cart_via_mtop(cookie_dict: Dict[str, str], timeout: float = 8.0) -> Di
         # 3. Trích xuất dữ liệu thành công
         data_block = res_json.get("data", {})
         mod_data = {}
+        hierarchy = None
         if isinstance(data_block, dict):
             if "module" in data_block and isinstance(data_block["module"], dict):
                 mod_data = data_block["module"].get("data", {})
+                hierarchy = data_block["module"].get("hierarchy")
             elif "data" in data_block and isinstance(data_block["data"], dict):
                 mod_data = data_block["data"]
+                hierarchy = data_block.get("hierarchy")
             else:
                 mod_data = data_block
 
+        products = []
         if mod_data:
-            products, summary = extract_cart_from_modules(mod_data)
+            products, summary = extract_cart_from_modules(mod_data, hierarchy=hierarchy)
             if products:
                 return {
                     "status": "ok",
@@ -393,9 +472,11 @@ def fetch_cart_via_page_html(cookie_dict: Dict[str, str], timeout: float = 10.0)
         if m:
             try:
                 init_data = json.loads(m.group(1))
-                mod_data = init_data.get("module", {}).get("data", {})
+                module_obj = init_data.get("module", {})
+                mod_data = module_obj.get("data", {})
+                hierarchy = module_obj.get("hierarchy")
                 if mod_data:
-                    products, summary = extract_cart_from_modules(mod_data)
+                    products, summary = extract_cart_from_modules(mod_data, hierarchy=hierarchy)
                     if products:
                         return {
                             "status": "ok",

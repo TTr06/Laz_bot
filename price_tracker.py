@@ -31,12 +31,82 @@ from anti_detect import (
     COOKIES_FILE,
 )
 from database import should_notify_price_change, get_target_price
-from cart_api import scrape_cart_via_requests
+from cart_api import (
+    scrape_cart_via_requests,
+    parse_price,
+    extract_cart_from_modules,
+)
 import database
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PRICE_HISTORY_FILE = os.path.join(BASE_DIR, "price_history.json")
 CART_URL = "https://cart.lazada.vn/cart"
+
+# Script chèn vào trình duyệt để bắt phản hồi /cart/api/async (khi click Chọn tất cả)
+_CART_ASYNC_HOOK_JS = """
+(function() {
+    if (window.__lazHookInstalled) return;
+    window.__lazHookInstalled = true;
+    window.__lazAsyncQueue = [];
+
+    function _recordPayload(url, reqBody, respText) {
+        try {
+            if (!url || (url.indexOf('/cart/api/async') === -1 && url.indexOf('ultron') === -1)) return;
+            var op = '';
+            var selectedArg = null;
+            try {
+                var parsed = JSON.parse(reqBody || '{}');
+                op = parsed.operator || '';
+                if (op === 'listHeader_H' && parsed.data && parsed.data.listHeader_H) {
+                    var cb = parsed.data.listHeader_H.fields && parsed.data.listHeader_H.fields.checkbox;
+                    selectedArg = cb ? cb.selected : null;
+                }
+            } catch(e) {}
+            window.__lazAsyncQueue.push({
+                ts: Date.now(),
+                url: url,
+                operator: op,
+                selectedArg: selectedArg,
+                body: respText
+            });
+        } catch(e) {}
+    }
+
+    var origOpen = XMLHttpRequest.prototype.open;
+    var origSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(method, url) {
+        this._lazUrl = url || '';
+        return origOpen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function(body) {
+        this._lazReqBody = body;
+        this.addEventListener('load', function() {
+            _recordPayload(this._lazUrl, this._lazReqBody, this.responseText || '');
+        });
+        return origSend.apply(this, arguments);
+    };
+
+    if (window.fetch) {
+        var origFetch = window.fetch;
+        window.fetch = function() {
+            var arg0 = arguments[0];
+            var arg1 = arguments[1] || {};
+            var url = typeof arg0 === 'string' ? arg0 : (arg0 && arg0.url || '');
+            var reqBody = arg1 && typeof arg1.body === 'string' ? arg1.body : '';
+            return origFetch.apply(this, arguments).then(function(resp) {
+                try {
+                    if (url && (url.indexOf('/cart/api/async') !== -1 || url.indexOf('ultron') !== -1)) {
+                        resp.clone().text().then(function(txt) {
+                            _recordPayload(url, reqBody, txt);
+                        });
+                    }
+                } catch(e) {}
+                return resp;
+            });
+        };
+    }
+})();
+"""
 
 
 def load_price_history() -> dict:
@@ -52,17 +122,6 @@ def load_price_history() -> dict:
 def save_price_history(data: dict) -> None:
     with open(PRICE_HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-
-
-def parse_price(price_text: Any) -> Optional[float]:
-    if price_text is None:
-        return None
-    cleaned = re.sub(r'[^\d.,]', '', str(price_text))
-    cleaned = cleaned.replace('.', '').replace(',', '.')
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
 
 
 def _hash_id(text: str) -> str:
@@ -129,15 +188,25 @@ def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False, max_re
                     "data_bytes": 0
                 }
 
+        # Đăng ký hook bắt API /cart/api/async trước khi mở trang giỏ hàng (an toàn cho cả keep_alive)
+        if not getattr(driver, "_laz_async_hooked", False):
+            try:
+                driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": _CART_ASYNC_HOOK_JS})
+                driver._laz_async_hooked = True
+            except Exception:
+                pass
+
         # 1. Truy cập trang giỏ hàng (áp dụng safe_get chống timeout)
         safe_get(driver, CART_URL, timeout=30)
 
-        # Chờ thông minh: kiểm tra xem __initData__ hoặc DOM giỏ hàng đã xuất hiện chưa (tối đa 3.5s, tick mỗi 100ms)
-        for _ in range(35):
+        # Chờ thông minh: đợi React render xong checkbox 'Chọn tất cả' hoặc trạng thái giỏ trống/đăng nhập (tối đa 6s)
+        for _ in range(60):
+            cur_u = (driver.current_url or "").lower()
+            if "member.lazada.vn" in cur_u or "login" in cur_u:
+                break
             ready = driver.execute_script("""
                 return Boolean(
-                    (window.__initData__ && window.__initData__.module && window.__initData__.module.data) ||
-                    document.querySelector('.list-header-checkbox, .checkout-summary, .cart-empty')
+                    document.querySelector('.list-header-checkbox input, .checkbox-wrap input[type="checkbox"], .cart-empty')
                 );
             """)
             if ready:
@@ -165,11 +234,12 @@ def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False, max_re
             var hasLoginBtn = /\\b(LOGIN|SIGNUP|Sign in|Sign up)\\b/i.test(bodyText);
             var hasAccount = /'s Account|Tài khoản của|Thông tin tài khoản/i.test(bodyText);
             var initData = window.__initData__;
-            var hasModules = initData && initData.module && initData.module.data && Object.keys(initData.module.data).length > 0;
+            var hasModules = Boolean(initData && initData.module && initData.module.data && Object.keys(initData.module.data).length > 0);
+            var hasDomItems = document.querySelectorAll('.cart-item').length > 0;
             return {
                 hasLoginBtn: hasLoginBtn,
                 hasAccount: hasAccount,
-                hasModules: hasModules
+                hasModules: hasModules || hasDomItems
             };
         """)
 
@@ -187,32 +257,15 @@ def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False, max_re
                 "data_bytes": data_bytes
             }
 
-        # 2. Click 'Chọn tất cả' và chờ summary cập nhật trực tiếp trong bộ nhớ browser (In-Memory Polling)
-        # Giảm 15 vòng lặp IPC qua socket xuống đúng 1 lần chạy JS duy nhất (< 300ms)
-        summary_raw_text = ""
-        try:
-            driver.set_script_timeout(5)
-            summary_raw_text = driver.execute_async_script("""
-                var callback = arguments[arguments.length - 1];
-                var cb = document.querySelector('.list-header-checkbox input, .checkbox-wrap label, .list-header-checkbox, .checkbox-wrap input');
-                if (cb) {
-                    cb.click();
-                }
-                var start = Date.now();
-                var timer = setInterval(function() {
-                    var el = document.querySelector('.checkout-summary, .summary-section');
-                    var txt = el ? el.innerText : '';
-                    if ((txt && txt.indexOf('0 items') === -1) || (Date.now() - start > 1200)) {
-                        clearInterval(timer);
-                        callback(txt);
-                    }
-                }, 50);
-            """) or ""
-        except Exception:
-            pass
+        # 2. Đảm bảo tick 'Chọn tất cả' để Lazada tính lại toàn bộ giá khuyến mãi / voucher & tải đủ 100% các mặt hàng
+        async_module, summary_raw_text = _ensure_select_all_and_capture(driver)
 
         # 3. Đọc dữ liệu từng sản phẩm & từng phân loại và Giá Cuối Cùng ngay tại giỏ
-        products, summary_data = _extract_cart_and_summary(driver, summary_raw_text=summary_raw_text)
+        products, summary_data = _extract_cart_and_summary(
+            driver,
+            summary_raw_text=summary_raw_text,
+            async_module=async_module,
+        )
 
         data_bytes = _extract_data_bytes(driver)
         duration = round(time.perf_counter() - t_start, 2)
@@ -280,81 +333,286 @@ def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False, max_re
             safe_quit(driver)
 
 
-def _extract_cart_and_summary(driver, summary_raw_text: Optional[str] = None) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    products = []
-    summary_data = {}
+def _click_header_select_all(driver) -> None:
+    """Click nút checkbox 'Chọn tất cả' ở đầu giỏ hàng (tuyệt đối không đụng nút thanh toán)."""
+    driver.execute_script("""
+        var lbl = document.querySelector('.list-header-checkbox, .checkbox-wrap label');
+        var inp = document.querySelector('.list-header-checkbox input, .checkbox-wrap input[type="checkbox"]');
+        if (lbl) lbl.click();
+        else if (inp) inp.click();
+    """)
 
-    # Trích xuất dữ liệu sản phẩm từ window.__initData__
+
+def _get_header_checkbox_state(driver) -> Dict[str, Any]:
+    return driver.execute_script("""
+        var inp = document.querySelector('.list-header-checkbox input, .checkbox-wrap input[type="checkbox"]');
+        var sum = document.querySelector('.checkout-summary, .summary-section');
+        var emptyEl = document.querySelector('.cart-empty');
+        return {
+            found: Boolean(inp),
+            checked: inp ? Boolean(inp.checked || inp.getAttribute('aria-checked') === 'true') : false,
+            disabled: inp ? Boolean(inp.disabled) : true,
+            isEmpty: Boolean(emptyEl),
+            summaryText: sum ? (sum.innerText || '') : ''
+        };
+    """) or {}
+
+
+def _pop_selected_async_module(driver) -> Optional[Dict[str, Any]]:
+    """Lấy JSON module từ /cart/api/async trả về ngay sau thao tác Chọn tất cả."""
+    raw_body = driver.execute_script("""
+        var q = window.__lazAsyncQueue || [];
+        for (var i = q.length - 1; i >= 0; i--) {
+            if (q[i].operator === 'listHeader_H' && q[i].selectedArg === true && q[i].body) {
+                return q[i].body;
+            }
+        }
+        return null;
+    """)
+    if not raw_body:
+        return None
     try:
-        init_data = driver.execute_script("return window.__initData__;")
-        if init_data and isinstance(init_data, dict):
-            mod_data = init_data.get("module", {}).get("data", {})
-            for key, val in mod_data.items():
-                if val.get("tag") == "item":
-                    fields = val.get("fields", {})
-                    title = fields.get("title", "").strip()
-                    if not title:
-                        continue
+        parsed = json.loads(raw_body)
+        module = parsed.get("module")
+        if isinstance(module, dict) and module.get("data"):
+            return module
+    except Exception:
+        pass
+    return None
 
-                    valid = bool(fields.get("valid", True))
-                    sku_info = fields.get("sku", {}) or fields.get("skuInfo", {})
-                    sku_text = (sku_info.get("skuText") or "").strip()
-                    sku_text = re.sub(r'\s+', ' ', sku_text)
-                    url = fields.get("url") or fields.get("itemUrl") or ""
-                    if url:
-                        if url.startswith("//"):
-                            url = "https:" + url
-                        url = re.sub(r'lazada\.vn/+', 'lazada.vn/', url)
 
-                    price_info = fields.get("price", {}) or {}
-                    base_price = parse_price(price_info.get("price") or price_info.get("currentPrice"))
+def _is_summary_populated(summary_txt: str) -> bool:
+    if not summary_txt:
+        return False
+    low = summary_txt.lower()
+    if "0 sản phẩm" in low or "0 items" in low or "thanh toán(0)" in low or "checkout(0)" in low:
+        return False
+    return True
 
-                    discount_info = fields.get("discountPrice") or {}
-                    discount_price = None
-                    if discount_info:
-                        discount_price = parse_price(discount_info.get("priceAmtValue") or discount_info.get("price"))
 
-                    real_price = discount_price if (discount_price is not None and discount_price > 0) else base_price
+def _ensure_select_all_and_capture(driver) -> tuple[Optional[Dict[str, Any]], str]:
+    """
+    Đảm bảo tất cả mặt hàng hợp lệ trong giỏ hàng đều được tick chọn:
+    - Nếu 'Chọn tất cả' đang bật sẵn từ phiên trước, bỏ chọn rồi chọn lại để Lazada
+      chạy /cart/api/async tính mới 100% giá thực tế và nạp đầy đủ mọi trang sản phẩm.
+    - Trả về (async_module, summary_raw_text).
+    """
+    try:
+        driver.execute_script(_CART_ASYNC_HOOK_JS)
+        state = _get_header_checkbox_state(driver)
+        if state.get("isEmpty") or not state.get("found"):
+            return None, state.get("summaryText", "")
 
-                    products.append({
-                        "name": title,
-                        "sku": sku_text,
-                        "valid": valid,
-                        "base_price": base_price,
-                        "discount_price": discount_price,
-                        "price": real_price,
-                        "has_discount": bool(discount_price and discount_price < base_price),
-                        "discount_amount": (base_price - discount_price) if (discount_price and base_price) else 0,
-                        "url": url,
-                        "timestamp": datetime.now().isoformat()
-                    })
+        if state.get("disabled"):
+            # Toàn bộ sản phẩm đều hết hàng / vô hiệu -> đọc trực tiếp trạng thái hiện tại
+            return None, state.get("summaryText", "")
 
+        # Nếu đang được chọn sẵn (do phiên trước giữ trạng thái), bỏ chọn trước để làm mới hoàn toàn
+        if state.get("checked"):
+            driver.execute_script("window.__lazAsyncQueue = [];")
+            _click_header_select_all(driver)
+            for _ in range(25):
+                cur = _get_header_checkbox_state(driver)
+                q_len = driver.execute_script("return (window.__lazAsyncQueue || []).length;")
+                if not cur.get("checked") and q_len > 0:
+                    break
+                time.sleep(0.1)
+
+        # Thực hiện chọn tất cả (tối đa 2 lần click phòng trường hợp checkbox đang ở trạng thái mixed)
+        async_module: Optional[Dict[str, Any]] = None
+        for _attempt in range(2):
+            cur = _get_header_checkbox_state(driver)
+            if cur.get("checked") and async_module is not None:
+                break
+
+            driver.execute_script("window.__lazAsyncQueue = [];")
+            _click_header_select_all(driver)
+
+            for _ in range(45):
+                async_module = _pop_selected_async_module(driver)
+                if async_module is not None:
+                    # Cho React 150ms render lại DOM đồng bộ với response vừa nhận
+                    time.sleep(0.15)
+                    break
+
+                # Kiểm tra nếu có phản hồi bỏ chọn (trạng thái mixed vừa chuyển về unchecked) -> thoát để click lại
+                unselected_fired = driver.execute_script("""
+                    var q = window.__lazAsyncQueue || [];
+                    for (var i = q.length - 1; i >= 0; i--) {
+                        if (q[i].operator === 'listHeader_H' && q[i].selectedArg === false) return true;
+                    }
+                    return false;
+                """)
+                if unselected_fired:
+                    break
+
+                cur_now = _get_header_checkbox_state(driver)
+                if cur_now.get("checked") and _is_summary_populated(cur_now.get("summaryText", "")):
+                    # Trường hợp hook không bắt được payload nhưng UI đã chọn & cập nhật xong
+                    q_len = driver.execute_script("return (window.__lazAsyncQueue || []).length;")
+                    if q_len > 0:
+                        time.sleep(0.15)
+                        break
+
+                time.sleep(0.1)
+
+            if async_module is not None:
+                break
+
+        final_state = _get_header_checkbox_state(driver)
+        return async_module, final_state.get("summaryText", "")
     except Exception as e:
-        print(f"[!] Lỗi trích xuất __initData__: {e}")
+        print(f"[!] Lỗi khi tick Chọn tất cả: {e}")
+        return None, ""
 
-    # Đọc phần tóm tắt đơn hàng (Order Summary) trực tiếp từ giao diện giỏ hàng
+
+def _parse_summary_text(summary_raw_text: str) -> Dict[str, Any]:
+    """Phân tích phần tóm tắt đơn hàng từ text DOM (hỗ trợ cả tiếng Việt và tiếng Anh)."""
+    summary_data: Dict[str, Any] = {}
+    if not summary_raw_text:
+        return summary_data
+
+    m_total = re.search(r'(?:Tổng cộng|Total)[\s\t]*((?:₫?\s*[\d.,]+(?:\s*₫)?))', summary_raw_text, re.IGNORECASE)
+    if m_total:
+        val = m_total.group(1).strip()
+        parsed_val = parse_price(val)
+        if parsed_val and parsed_val > 0:
+            summary_data['Total'] = val
+
+    m_sub = re.search(r'(?:Tạm tính|Subtotal)[^\n]*\n\s*((?:₫?\s*[\d.,]+(?:\s*₫)?))', summary_raw_text, re.IGNORECASE)
+    if m_sub:
+        summary_data['Subtotal'] = m_sub.group(1).strip()
+
+    m_promo = re.search(r'(?:Khuyến mãi|Promotion)[^\n]*\n\s*(-?\s*₫?\s*[\d.,]+(?:\s*₫)?)', summary_raw_text, re.IGNORECASE)
+    if m_promo:
+        summary_data['Promotion'] = m_promo.group(1).strip()
+
+    m_ship = re.search(r'(?:Phí vận chuyển|Shipping Fee)[^\n]*\n\s*([^\n]+)', summary_raw_text, re.IGNORECASE)
+    if m_ship:
+        summary_data['Shipping Fee'] = m_ship.group(1).strip()
+
+    return summary_data
+
+
+def _extract_dom_cart_items(driver) -> List[Dict[str, Any]]:
+    """Đọc danh sách sản phẩm và giá đang hiển thị trực tiếp từ các phần tử DOM .cart-item."""
+    raw_items = driver.execute_script("""
+        var out = [];
+        document.querySelectorAll('.cart-item').forEach(function(el) {
+            var titleEl = el.querySelector('a.title, .title, [class*="item-title"]');
+            if (!titleEl) return;
+            var title = (titleEl.innerText || '').trim();
+            if (!title) return;
+
+            var skuEl = el.querySelector('a.sku, .sku, [class*="item-sku"]');
+            var curEl = el.querySelector('.current-price');
+            var discEl = el.querySelector('.discount-price-tip-price');
+            var qtyEl = el.querySelector('.automation-item-quantity input, .next-number-picker-input input, input[type="tel"]');
+            var cbInput = el.querySelector('input[type="checkbox"]');
+            var isInvalid = Boolean(
+                el.closest('.invalid-list, .cart-invalid-list, .automation-invalid-group-item, [class*="invalid"]') ||
+                (cbInput && cbInput.disabled)
+            );
+
+            out.push({
+                title: title,
+                sku: skuEl ? (skuEl.innerText || '').trim() : '',
+                href: titleEl.getAttribute('href') || '',
+                current_price: curEl ? (curEl.innerText || '').trim() : '',
+                discount_price: discEl ? (discEl.innerText || '').trim() : '',
+                quantity: qtyEl ? qtyEl.value : '1',
+                checked: cbInput ? Boolean(cbInput.checked) : false,
+                valid: !isInvalid
+            });
+        });
+        return out;
+    """) or []
+
+    products: List[Dict[str, Any]] = []
+    for item in raw_items:
+        title = item.get("title", "").strip()
+        if not title:
+            continue
+        sku_text = re.sub(r'\s+', ' ', (item.get("sku") or "").strip())
+        url = (item.get("href") or "").strip()
+        if url:
+            if url.startswith("//"):
+                url = "https:" + url
+            url = re.sub(r'lazada\.vn/+', 'lazada.vn/', url)
+
+        base_price = parse_price(item.get("current_price"))
+        discount_price = parse_price(item.get("discount_price")) if item.get("discount_price") else None
+        real_price = discount_price if (discount_price is not None and discount_price > 0) else base_price
+        has_disc = bool(discount_price and base_price and discount_price < base_price)
+        disc_amt = (base_price - discount_price) if has_disc else 0
+        try:
+            qty = max(1, int(str(item.get("quantity") or "1").strip()))
+        except ValueError:
+            qty = 1
+
+        products.append({
+            "name": title,
+            "sku": sku_text,
+            "valid": bool(item.get("valid", True)),
+            "selected": bool(item.get("checked", False)),
+            "quantity": qty,
+            "base_price": base_price,
+            "discount_price": discount_price,
+            "price": real_price,
+            "has_discount": has_disc,
+            "discount_amount": disc_amt,
+            "url": url,
+            "timestamp": datetime.now().isoformat(),
+        })
+    return products
+
+
+def _extract_cart_and_summary(
+    driver,
+    summary_raw_text: Optional[str] = None,
+    async_module: Optional[Dict[str, Any]] = None,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    products: List[Dict[str, Any]] = []
+    summary_data: Dict[str, Any] = {}
+
+    # 1. Ưu tiên đọc dữ liệu chính xác từ phản hồi /cart/api/async sau khi tick 'Chọn tất cả'
+    if async_module and isinstance(async_module, dict):
+        mod_data = async_module.get("data", {})
+        hierarchy = async_module.get("hierarchy")
+        if mod_data:
+            products, summary_data = extract_cart_from_modules(mod_data, hierarchy=hierarchy)
+
+    # 2. Kiểm tra hoặc dự phòng từ DOM hiện tại sau khi đã tick 'Chọn tất cả'
+    dom_products = _extract_dom_cart_items(driver)
+    if not products or len(dom_products) > len(products):
+        products = dom_products
+
+    # 3. Dự phòng cuối nếu cả async và DOM đều không đọc được -> đọc window.__initData__ kèm hierarchy
+    if not products:
+        try:
+            init_data = driver.execute_script("return window.__initData__;")
+            if init_data and isinstance(init_data, dict):
+                module_obj = init_data.get("module", {})
+                mod_data = module_obj.get("data", {})
+                hierarchy = module_obj.get("hierarchy")
+                if mod_data:
+                    products, init_summary = extract_cart_from_modules(mod_data, hierarchy=hierarchy)
+                    for k, v in init_summary.items():
+                        summary_data.setdefault(k, v)
+        except Exception as e:
+            print(f"[!] Lỗi trích xuất __initData__: {e}")
+
+    # 4. Bổ sung / đối chiếu phần tóm tắt đơn hàng từ DOM .checkout-summary
     try:
         if not summary_raw_text:
             summary_raw_text = driver.execute_script("""
                 var el = document.querySelector('.checkout-summary, .summary-section');
                 return el ? el.innerText : '';
             """)
-        if summary_raw_text:
-            m_total = re.search(r'Total[\s\t]+(₫?\s*[\d\.,]+)', summary_raw_text, re.IGNORECASE)
-            if m_total:
-                summary_data['Total'] = m_total.group(1).strip()
-
-            m_sub = re.search(r'Subtotal[^\n]*\n\s*(₫?\s*[\d\.,]+)', summary_raw_text, re.IGNORECASE)
-            if m_sub:
-                summary_data['Subtotal'] = m_sub.group(1).strip()
-
-            m_promo = re.search(r'Promotion[^\n]*\n\s*(-?₫?\s*[\d\.,]+)', summary_raw_text, re.IGNORECASE)
-            if m_promo:
-                summary_data['Promotion'] = m_promo.group(1).strip()
-
-            m_ship = re.search(r'Shipping Fee[^\n]*\n\s*([^\n]+)', summary_raw_text, re.IGNORECASE)
-            if m_ship:
-                summary_data['Shipping Fee'] = m_ship.group(1).strip()
+        dom_summary = _parse_summary_text(summary_raw_text or "")
+        for k, v in dom_summary.items():
+            if v and (k not in summary_data or not summary_data[k]):
+                summary_data[k] = v
     except Exception as e:
         print(f"[!] Lỗi đọc summary text: {e}")
 

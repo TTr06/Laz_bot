@@ -769,6 +769,27 @@ async def cart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await msg.reply_html(extra)
 
 
+def _split_html_chunks(text: str, limit: int = 3800) -> list[str]:
+    """Chia văn bản HTML theo dòng để không bao giờ cắt ngang thẻ HTML và vượt quá 4096 ký tự Telegram."""
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for line in text.splitlines():
+        line_len = len(line) + 1
+        if cur and cur_len + line_len > limit:
+            chunks.append("\n".join(cur))
+            cur = [line]
+            cur_len = line_len
+        else:
+            cur.append(line)
+            cur_len += line_len
+    if cur:
+        chunks.append("\n".join(cur))
+    return chunks
+
+
 async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     auto_register_user(update)
     msg = update.effective_message
@@ -809,10 +830,10 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         changes_msg = "✅ Tất cả sản phẩm & phân loại vẫn giữ nguyên giá (không đổi)."
 
     full_text = summary_header + changes_msg
-    if len(full_text) > 4000:
-        full_text = full_text[:4000] + "\n\n<i>... (cắt ngắn)</i>"
-
-    await status_msg.edit_text(full_text, parse_mode="HTML")
+    chunks = _split_html_chunks(full_text)
+    await status_msg.edit_text(chunks[0], parse_mode="HTML")
+    for extra in chunks[1:]:
+        await msg.reply_html(extra)
 
 
 async def setprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -984,9 +1005,8 @@ async def prices_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not msg:
         return
     text = get_price_summary()
-    if len(text) > 4000:
-        text = text[:4000] + "\n\n<i>... (cắt ngắn)</i>"
-    await msg.reply_html(text)
+    for chunk in _split_html_chunks(text):
+        await msg.reply_html(chunk)
 
 
 async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
