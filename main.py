@@ -562,13 +562,39 @@ DANH SÁCH CÁC LỆNH HỖ TRỢ TRÊN HOST CLI:
         res = track_prices(headless=True)
         if res.get("status") == "ok":
             changes = res.get("changes", [])
+            total_change = res.get("total_change")
             total_p = res.get("total_products", 0)
             summary = res.get("summary", {})
             print(f"[OK] Đã kiểm tra {total_p} sản phẩm. Tổng tiền: {summary.get('Total', '0₫')}")
-            if changes:
-                print(f"\n[!] PHÁT HIỆN {len(changes)} BIẾN ĐỘNG GIÁ:")
+            if changes or total_change:
+                print(f"\n[!] PHÁT HIỆN {len(changes)} BIẾN ĐỘNG:")
+                if total_change:
+                    print(
+                        f"• Tổng giỏ hàng: {total_change['old_total']} -> {total_change['new_total']} "
+                        f"({total_change['direction']} {abs(total_change['diff']):,.0f}₫)"
+                    )
                 for c in changes:
-                    print(f"• {c['name'][:40]} | {c.get('sku', '')}: {c['old_price']:,.0f}₫ -> {c['new_price']:,.0f}₫ ({c['direction']} {abs(c['diff']):,.0f}₫)")
+                    c_type = c.get("type", "PRICE_CHANGE")
+                    sku_val = (c.get("sku") or "").strip()
+                    sku_part = f" | {sku_val}" if sku_val else ""
+                    name_part = (c.get("name") or "Sản phẩm")[:40]
+                    if c_type == "STOCK_CHANGE":
+                        price_val = c.get("price")
+                        price_str = f" (Giá: {price_val:,.0f}₫)" if price_val else ""
+                        print(f"• {name_part}{sku_part}: Tồn kho -> {c.get('status', 'THAY ĐỔI')}{price_str}")
+                    elif c.get("old_price") is not None and c.get("new_price") is not None:
+                        diff_val = c.get("diff")
+                        if diff_val is None:
+                            diff_val = c["new_price"] - c["old_price"]
+                        direction = c.get("direction") or ("GIẢM" if diff_val < 0 else "TĂNG")
+                        print(
+                            f"• {name_part}{sku_part}: {c['old_price']:,.0f}₫ -> {c['new_price']:,.0f}₫ "
+                            f"({direction} {abs(diff_val):,.0f}₫)"
+                        )
+                    else:
+                        price_val = c.get("new_price") or c.get("price")
+                        price_str = f"{price_val:,.0f}₫" if price_val else "N/A"
+                        print(f"• {name_part}{sku_part}: Giá hiện tại {price_str}")
             else:
                 print("[OK] Tất cả sản phẩm giữ nguyên giá.")
         else:
