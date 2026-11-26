@@ -18,6 +18,8 @@ import time
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
+from selenium.webdriver.common.by import By
+
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
@@ -201,18 +203,19 @@ def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False, max_re
         # 1. Truy cập trang giỏ hàng (áp dụng safe_get chống timeout)
         safe_get(driver, CART_URL, timeout=30)
 
-        # Chờ thông minh: đợi trang tải hoàn chỉnh & React render xong checkbox 'Chọn tất cả' hoặc trạng thái giỏ trống/đăng nhập (tối đa 6s)
+        # Chờ thông minh: đợi React render xong checkbox 'Chọn tất cả' + danh sách sản phẩm hoặc trạng thái giỏ trống/đăng nhập (tối đa 6s)
         for _ in range(60):
             cur_u = (driver.current_url or "").lower()
             if "member.lazada.vn" in cur_u or "login" in cur_u or "_____tmd_____" in cur_u or "punish" in cur_u:
                 break
             ready = driver.execute_script("""
                 return Boolean(
-                    document.readyState === 'complete' &&
+                    (document.readyState === 'complete' || document.querySelectorAll('.cart-item').length > 0) &&
                     document.querySelector('.list-header-checkbox input, .checkbox-wrap input[type="checkbox"], .cart-empty')
                 );
             """)
             if ready:
+                time.sleep(0.25)
                 break
             time.sleep(0.1)
 
@@ -290,14 +293,30 @@ def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False, max_re
                 "data_bytes": data_bytes,
             }
 
-        if block_reason == "select_all_failed":
+        if block_reason == "need_login":
+            data_bytes = _extract_data_bytes(driver)
+            duration = round(time.perf_counter() - t_start, 2)
+            if keep_alive:
+                close_shared_driver()
+            return {
+                "status": "need_login",
+                "message": "Phiên đăng nhập Lazada đã hết hạn (FAIL_SYS_SESSION_EXPIRED). Vui lòng cập nhật cookie mới bằng /cookie.",
+                "products": [],
+                "summary": {},
+                "duration": duration,
+                "data_bytes": data_bytes,
+            }
+
+        if block_reason and block_reason.startswith("select_all_failed"):
+            detail = block_reason.split(":", 1)[1] if ":" in block_reason else ""
+            detail_str = f" ({detail})" if detail else ""
             data_bytes = _extract_data_bytes(driver)
             duration = round(time.perf_counter() - t_start, 2)
             if keep_alive:
                 close_shared_driver()
             return {
                 "status": "error",
-                "message": "Không thể tick 'Chọn tất cả' để tính giá cuối cùng trên Lazada. Giữ nguyên dữ liệu giá cũ trong database.",
+                "message": f"Không thể tick 'Chọn tất cả' để tính giá cuối cùng trên Lazada{detail_str}. Giữ nguyên dữ liệu giá cũ trong database.",
                 "products": [],
                 "summary": {},
                 "duration": duration,
@@ -378,18 +397,50 @@ def scrape_cart_selenium(headless: bool = True, keep_alive: bool = False, max_re
 
 
 def _click_header_select_all(driver) -> None:
-    """Click nút checkbox 'Chọn tất cả' ở đầu giỏ hàng (tuyệt đối không đụng nút thanh toán)."""
+    """Click nút checkbox 'Chọn tất cả' ở đầu giỏ hàng bằng thao tác click thật (ưu tiên Selenium click -> fallback JS)."""
+    selectors = [
+        ".list-header-checkbox",
+        ".list-header .next-checkbox",
+        ".checkbox-wrap label",
+        ".list-header-checkbox input",
+        ".checkbox-wrap input[type='checkbox']",
+    ]
+    for sel in selectors:
+        try:
+            elems = driver.find_elements(By.CSS_SELECTOR, sel)
+            for el in elems:
+                try:
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", el)
+                    el.click()
+                    return
+                except Exception:
+                    try:
+                        driver.execute_script("arguments[0].click();", el)
+                        return
+                    except Exception:
+                        continue
+        except Exception:
+            continue
+
+    # Dự phòng cuối bằng JS selector trực tiếp
     driver.execute_script("""
-        var lbl = document.querySelector('.list-header-checkbox, .checkbox-wrap label');
-        var inp = document.querySelector('.list-header-checkbox input, .checkbox-wrap input[type="checkbox"]');
-        if (lbl) lbl.click();
-        else if (inp) inp.click();
+        var el = document.querySelector('.list-header-checkbox')
+              || document.querySelector('.list-header .next-checkbox')
+              || document.querySelector('.checkbox-wrap label')
+              || document.querySelector('.list-header-checkbox input')
+              || document.querySelector('.checkbox-wrap input[type="checkbox"]');
+        if (el) el.click();
     """)
 
 
 def _get_header_checkbox_state(driver) -> Dict[str, Any]:
     return driver.execute_script("""
-        var inp = document.querySelector('.list-header-checkbox input, .checkbox-wrap input[type="checkbox"]');
+        var inp = document.querySelector('.list-header-checkbox input')
+               || document.querySelector('.list-header input[type="checkbox"]')
+               || document.querySelector('.checkbox-wrap input[type="checkbox"]');
+        var lbl = document.querySelector('.checkbox-wrap')
+               || document.querySelector('.list-header-container')
+               || document.querySelector('.list-header-checkbox');
         var sum = document.querySelector('.checkout-summary, .summary-section');
         var emptyEl = document.querySelector('.cart-empty');
         return {
@@ -397,6 +448,8 @@ def _get_header_checkbox_state(driver) -> Dict[str, Any]:
             checked: inp ? Boolean(inp.checked || inp.getAttribute('aria-checked') === 'true') : false,
             disabled: inp ? Boolean(inp.disabled) : true,
             isEmpty: Boolean(emptyEl),
+            headerText: lbl ? (lbl.innerText || '') : '',
+            domCount: document.querySelectorAll('.cart-item').length,
             summaryText: sum ? (sum.innerText || '') : ''
         };
     """) or {}
@@ -434,38 +487,70 @@ def _is_summary_populated(summary_txt: str) -> bool:
     return True
 
 
-def _has_captcha_in_async_queue(driver) -> bool:
-    """Kiểm tra xem /cart/api/async có bị chặn bởi Captcha / RGV587 không."""
+def _detect_block_in_async_or_dom(driver) -> Optional[str]:
+    """Phát hiện Captcha / RGV587 hoặc hết hạn phiên đăng nhập trong /cart/api/async hoặc DOM."""
     try:
-        return bool(driver.execute_script("""
+        status = driver.execute_script("""
             var q = window.__lazAsyncQueue || [];
-            for (var i = 0; i < q.length; i++) {
-                var b = q[i].body || '';
+            for (var i = q.length - 1; i >= 0; i--) {
+                var b = (q[i].body || '').toLowerCase();
+                if (b.indexOf('fail_sys_session_expired') !== -1 || b.indexOf('session过期') !== -1) {
+                    return 'need_login';
+                }
                 if (
-                    b.indexOf('RGV587_ERROR') !== -1 ||
-                    b.indexOf('FAIL_SYS_USER_VALIDATE') !== -1 ||
+                    b.indexOf('rgv587') !== -1 ||
+                    b.indexOf('fail_sys_user_validate') !== -1 ||
                     b.indexOf('_____tmd_____') !== -1 ||
-                    b.indexOf('action=captcha') !== -1
+                    b.indexOf('action=captcha') !== -1 ||
+                    b.indexOf('punish') !== -1
                 ) {
-                    return true;
+                    return 'captcha';
                 }
             }
-            return Boolean(document.querySelector('#baxia-punish, .nc-container, iframe[src*="punish"]'));
-        """))
+            if (document.querySelector('#baxia-punish, .baxia-dialog, .nc-container, .nc_wrapper, #nc_1_wrapper, iframe[src*="punish"], iframe[src*="captcha"], iframe[src*="tmd"]')) {
+                return 'captcha';
+            }
+            return null;
+        """)
+        return status
     except Exception:
-        return False
+        return None
+
+
+def _get_async_diagnostic(driver) -> str:
+    """Trích xuất ngắn gọn nguyên nhân từ hàng đợi /cart/api/async nếu tick không thành công."""
+    try:
+        diag = driver.execute_script("""
+            var q = window.__lazAsyncQueue || [];
+            if (!q.length) return 'no_async_xhr';
+            var last = q[q.length - 1];
+            var body = last.body || '';
+            try {
+                var j = JSON.parse(body);
+                if (j.ret) return 'api_ret=' + JSON.stringify(j.ret);
+                if (j.success === false) return 'api_success=false';
+            } catch(e) {}
+            return 'queue_len=' + q.length + ',op=' + (last.operator || '');
+        """)
+        return str(diag or "")
+    except Exception:
+        return ""
 
 
 def _ensure_select_all_and_capture(driver) -> tuple[Optional[Dict[str, Any]], str, Optional[str]]:
     """
     Đảm bảo tất cả mặt hàng hợp lệ trong giỏ hàng đều được tick chọn:
-    - Nếu 'Chọn tất cả' đang bật sẵn từ phiên trước, bỏ chọn rồi chọn lại để Lazada
-      chạy /cart/api/async tính mới 100% giá thực tế và nạp đầy đủ mọi trang sản phẩm.
-    - Phát hiện ngay Captcha / RGV587 hoặc lỗi không tick được để tránh ghi đè dữ liệu sai.
+    - Nếu 'Chọn tất cả' ĐÃ được chọn sẵn từ phiên trước và summary có tiền: giữ nguyên (cuộn tải thêm trang nếu thiếu) để tránh double-toggle gây rate-limit.
+    - Nếu chưa chọn: click chọn thật và đợi /cart/api/async tính mới 100% giá thực tế.
+    - Phát hiện ngay Captcha / RGV587, hết hạn cookie, hoặc lỗi không tick được để tránh ghi đè dữ liệu sai.
     - Trả về (async_module, summary_raw_text, block_reason).
     """
     try:
         driver.execute_script(_CART_ASYNC_HOOK_JS)
+        issue = _detect_block_in_async_or_dom(driver)
+        if issue:
+            return None, "", issue
+
         state = _get_header_checkbox_state(driver)
         if state.get("isEmpty") or not state.get("found"):
             return None, state.get("summaryText", ""), None
@@ -474,32 +559,35 @@ def _ensure_select_all_and_capture(driver) -> tuple[Optional[Dict[str, Any]], st
             # Toàn bộ sản phẩm đều hết hàng / vô hiệu -> đọc trực tiếp trạng thái hiện tại
             return None, state.get("summaryText", ""), None
 
-        # Nếu đang được chọn sẵn (do phiên trước giữ trạng thái), bỏ chọn trước để làm mới hoàn toàn
-        if state.get("checked"):
-            driver.execute_script("window.__lazAsyncQueue = [];")
-            _click_header_select_all(driver)
-            for _ in range(25):
-                if _has_captcha_in_async_queue(driver):
-                    return None, "", "captcha"
-                cur = _get_header_checkbox_state(driver)
-                q_len = driver.execute_script("return (window.__lazAsyncQueue || []).length;")
-                if not cur.get("checked") and q_len > 0:
-                    break
-                time.sleep(0.1)
+        # Nếu 'Chọn tất cả' ĐÃ được chọn sẵn từ trước và summary đã có số tiền -> không toggle tắt/bật gây spam request
+        if state.get("checked") and _is_summary_populated(state.get("summaryText", "")):
+            m_hdr = re.search(r'\((\d+)', state.get("headerText", ""))
+            expected_cnt = int(m_hdr.group(1)) if m_hdr else 0
+            if expected_cnt > state.get("domCount", 0):
+                # Cuộn xuống cuối để kích hoạt lazy-load trang 2 nếu có
+                try:
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight || 4000);")
+                    time.sleep(0.8)
+                    driver.execute_script("window.scrollTo(0, 0);")
+                except Exception:
+                    pass
+                state = _get_header_checkbox_state(driver)
+            return None, state.get("summaryText", ""), None
 
         # Thực hiện chọn tất cả (tối đa 2 lần click phòng trường hợp checkbox đang ở trạng thái mixed)
         async_module: Optional[Dict[str, Any]] = None
         for _attempt in range(2):
             cur = _get_header_checkbox_state(driver)
-            if cur.get("checked") and async_module is not None:
+            if cur.get("checked") and _is_summary_populated(cur.get("summaryText", "")):
                 break
 
             driver.execute_script("window.__lazAsyncQueue = [];")
             _click_header_select_all(driver)
 
-            for _ in range(45):
-                if _has_captcha_in_async_queue(driver):
-                    return None, "", "captcha"
+            for _ in range(60):
+                issue = _detect_block_in_async_or_dom(driver)
+                if issue:
+                    return None, "", issue
 
                 async_module = _pop_selected_async_module(driver)
                 if async_module is not None:
@@ -520,7 +608,7 @@ def _ensure_select_all_and_capture(driver) -> tuple[Optional[Dict[str, Any]], st
 
                 cur_now = _get_header_checkbox_state(driver)
                 if cur_now.get("checked") and _is_summary_populated(cur_now.get("summaryText", "")):
-                    q_len = driver.execute_script("return (window.__lazAsyncQueue || []).length;")
+                    q_len = driver.execute_script("return (window.__lazAsyncQueue || []).length;") or 0
                     if q_len > 0:
                         time.sleep(0.15)
                         break
@@ -530,18 +618,20 @@ def _ensure_select_all_and_capture(driver) -> tuple[Optional[Dict[str, Any]], st
             if async_module is not None:
                 break
 
-        if _has_captcha_in_async_queue(driver):
-            return None, "", "captcha"
+        issue = _detect_block_in_async_or_dom(driver)
+        if issue:
+            return None, "", issue
 
         final_state = _get_header_checkbox_state(driver)
         summary_txt = final_state.get("summaryText", "")
         if async_module is None and not (final_state.get("checked") and _is_summary_populated(summary_txt)):
-            return None, summary_txt, "select_all_failed"
+            diag = _get_async_diagnostic(driver)
+            return None, summary_txt, f"select_all_failed:{diag}" if diag else "select_all_failed"
 
         return async_module, summary_txt, None
     except Exception as e:
         print(f"[!] Lỗi khi tick Chọn tất cả: {e}")
-        return None, "", "select_all_failed"
+        return None, "", f"select_all_failed:{e}"
 
 
 def _parse_summary_text(summary_raw_text: str) -> Dict[str, Any]:

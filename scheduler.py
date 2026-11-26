@@ -40,6 +40,7 @@ scheduler_state = {
     "next_check_time": None,
     "current_mode": "Chưa chạy",
     "cookie_alert_sent": False,
+    "captcha_alert_sent": False,
     "last_error": None
 }
 
@@ -136,10 +137,33 @@ async def run_single_check(bot, next_target: Optional[datetime] = None, interval
             scheduler_state["cookie_alert_sent"] = True
         return
 
-    # Nếu thành công, reset cờ cảnh báo cookie
+    # Xử lý trường hợp Lazada yêu cầu xác minh Captcha (RGV587)
+    if status == "captcha":
+        log_check_result(
+            check_num=dashboard.total_checks,
+            status="captcha",
+            duration=duration,
+            data_bytes=data_bytes,
+            error_msg=result.get("message")
+        )
+        if not scheduler_state["captcha_alert_sent"]:
+            alert_text = (
+                "🛡️ <b>CẢNH BÁO: LAZADA YÊU CẦU XÁC MINH CAPTCHA!</b>\n\n"
+                "Lazada đang tạm chặn phiên làm việc để xác minh (Captcha / chống bot).\n"
+                "👉 <b>Cách khắc phục:</b>\n"
+                "1. Mở giỏ hàng Lazada trên trình duyệt Chrome của bạn và kéo xác minh Captcha.\n"
+                "2. Tạm tắt quét tự động bằng <code>/auto_off</code> ít phút nếu cần, rồi copy cookie mới gửi qua <code>/cookie &lt;cookie_mới&gt;</code>."
+            )
+            logger.warning("Lazada yêu cầu xác minh Captcha, đang gửi cảnh báo tới người dùng...")
+            await broadcast_message(bot, alert_text)
+            scheduler_state["captcha_alert_sent"] = True
+        return
+
+    # Nếu thành công, reset cờ cảnh báo cookie & captcha
     if status == "ok":
         dashboard.set_cookie_status(True)
         scheduler_state["cookie_alert_sent"] = False
+        scheduler_state["captcha_alert_sent"] = False
 
         products = result.get("products", [])
         summary = result.get("summary", {})
